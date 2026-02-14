@@ -1,0 +1,30 @@
+{
+    "name": "clash-config-proxy",
+    "version": "1.0.0",
+    "description": "Clash配置文件聚合系统",
+    "main": "backend/dist/index.js",
+    "scripts": {
+        "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+        "dev:backend": "cd backend && npm run dev",
+        "dev:frontend": "cd frontend && npm run dev",
+        "build": "npm run build:shared && npm run build:backend && npm run build:frontend",
+        "build:shared": "cd shared && npx tsc",
+        "build:backend": "cd backend && npm run build",
+        "build:frontend": "cd frontend && npm run build",
+        "start": "npm run build && cd backend && NODE_ENV=production npm start",
+        "install-all": "npm install && cd backend && npm install && cd ../frontend && npm install && cd ../shared && npm install"
+    },
+    "keywords": [
+        "clash",
+        "proxy",
+        "config",
+        "aggregator"
+    ],
+    "author": "",
+    "license": "MIT",
+    "devDependencies": {
+        "concurrently": "^8.2.2",
+        "ts-node": "^10.9.2",
+        "typescript": "^5.9.3"
+    }
+}
