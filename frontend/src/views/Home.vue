@@ -1,7 +1,7 @@
 <template>
     <div class="home">
-        <el-row :gutter="20">
-            <el-col :span="8">
+        <el-row :gutter="12">
+            <el-col :xs="24" :sm="8">
                 <el-card class="stat-card">
                     <div class="stat-content">
                         <div class="stat-icon">
@@ -14,7 +14,7 @@
                     </div>
                 </el-card>
             </el-col>
-            <el-col :span="8">
+            <el-col :xs="12" :sm="8">
                 <el-card class="stat-card">
                     <div class="stat-content">
                         <div class="stat-icon">
@@ -27,7 +27,7 @@
                     </div>
                 </el-card>
             </el-col>
-            <el-col :span="8">
+            <el-col :xs="12" :sm="8">
                 <el-card class="stat-card">
                     <div class="stat-content">
                         <div class="stat-icon">
@@ -98,7 +98,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useSchemesStore } from '@/stores/schemes'
 import { api } from '@/api'
 
@@ -122,7 +122,16 @@ const copyConfigUrl = async (schemeName: string) => {
         await navigator.clipboard.writeText(url)
         ElMessage.success('配置URL已复制到剪贴板')
     } catch (error) {
-        ElMessage.error('复制失败，请手动复制')
+        await ElMessageBox.prompt(
+            '当前环境可能为 HTTP，浏览器限制了剪贴板访问，请手动复制下方订阅地址。',
+            '手动复制订阅地址',
+            {
+                inputValue: url,
+                inputType: 'textarea',
+                showCancelButton: false,
+                confirmButtonText: '我知道了',
+            }
+        )
     }
 }
 
@@ -165,5 +174,27 @@ onMounted(() => {
     display: flex;
     justify-content: space-between;
     align-items: center;
+}
+
+@media (max-width: 767px) {
+    .home {
+        padding: 12px;
+    }
+
+    .stat-card .stat-content {
+        gap: 10px;
+    }
+
+    .stat-value {
+        font-size: 24px;
+    }
+
+    .stat-card :deep(.el-card__body) {
+        padding: 12px;
+    }
+
+    .el-col {
+        margin-bottom: 8px;
+    }
 }
 </style>

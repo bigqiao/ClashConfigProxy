@@ -1,7 +1,10 @@
 import axios from 'axios';
 import yaml from 'js-yaml';
-import type { ClashConfig, ClashProxy, Scheme } from '../../../shared/dist/types';
+import path from 'path';
+import { promises as fs } from 'fs';
+import type { ClashConfig, ClashProxy, Scheme, AppRouteRule, Config } from '../../../shared/dist/types';
 import { logger } from '../utils/logger';
+import { AppRuleService, APP_GROUPS, appRuleService } from './appRuleService';
 
 const REGION_PATTERNS: { name: string; emoji: string; pattern: RegExp }[] = [
     { name: '香港', emoji: '🇭🇰', pattern: /香港|HK|Hong\s*Kong/i },
@@ -25,8 +28,17 @@ const REGION_PATTERNS: { name: string; emoji: string; pattern: RegExp }[] = [
     { name: '菲律宾', emoji: '🇵🇭', pattern: /菲律宾|PH|Philippines/i },
     { name: '马来西亚', emoji: '🇲🇾', pattern: /马来西亚|MY|Malaysia/i },
 ];
+const UNCATEGORIZED_GROUP_LABEL = '📦 未分类';
+const UNCATEGORIZED_GROUP_KEY = '__uncategorized__';
+const CACHE_DIR = path.join(process.cwd(), 'data', 'cache');
 
 export class ClashService {
+    private normalizePolicyTarget(group: string): string {
+        if (group === '🎯 全球直连') return 'DIRECT';
+        if (group === '🛑 全球拦截') return 'REJECT';
+        return group;
+    }
+
     async fetchConfig(url: string): Promise<{ success: boolean; config?: ClashConfig; error?: string }> {
         try {
             const response = await axios.get(url, {
@@ -57,23 +69,38 @@ export class ClashService {
         }
     }
 
+    async fetchConfigWithCache(config: Config): Promise<{ success: boolean; config?: ClashConfig; error?: string; fromCache?: boolean }> {
+        const liveResult = await this.fetchConfig(config.url);
+        if (liveResult.success && liveResult.config) {
+            await this.saveConfigCache(config.id, liveResult.config);
+            return { ...liveResult, fromCache: false };
+        }
+
+        const cachedConfig = await this.loadConfigCache(config.id);
+        if (cachedConfig) {
+            logger.warn(`Using cached config for ${config.name} (${config.id}) due to fetch failure: ${liveResult.error}`);
+            return { success: true, config: cachedConfig, fromCache: true, error: liveResult.error };
+        }
+
+        return liveResult;
+    }
+
     async aggregateConfigs(scheme: Scheme): Promise<ClashConfig> {
         const enabledOnly = scheme.rules?.enabledOnly ?? true;
         const targetConfigs = enabledOnly ? scheme.configs.filter(c => c.enabled) : scheme.configs;
         const allProxies: ClashProxy[] = [];
-        const allGroups: any[] = [];
-        const allRules: string[] = [];
 
         for (const config of targetConfigs) {
-            const result = await this.fetchConfig(config.url);
+            const result = await this.fetchConfigWithCache(config);
             if (result.success && result.config) {
                 this.mergeProxies(allProxies, result.config.proxies, scheme.rules, config.name);
-                this.mergeGroups(allGroups, result.config['proxy-groups'] || []);
-                this.mergeRules(allRules, result.config.rules || []);
             }
         }
 
-        return {
+        const appRules = scheme.rules?.appRules || [];
+        const { ruleProviders, appRuleEntries, appGroupNames } = await this.buildAppRules(appRules);
+
+        const config: ClashConfig = {
             'mixed-port': 7890,
             'allow-lan': false,
             'bind-address': '*',
@@ -82,9 +109,15 @@ export class ClashService {
             'ipv6': false,
             'external-controller': '127.0.0.1:9090',
             proxies: allProxies,
-            'proxy-groups': this.generateProxyGroups(allProxies, allGroups, scheme.rules),
-            rules: [...allRules, 'MATCH,DIRECT']
+            'proxy-groups': this.generateProxyGroups(allProxies, scheme.rules, appGroupNames),
+            rules: [...appRuleEntries, 'MATCH,DIRECT'],
         };
+
+        if (Object.keys(ruleProviders).length > 0) {
+            config['rule-providers'] = ruleProviders;
+        }
+
+        return config;
     }
 
     private mergeProxies(
@@ -150,21 +183,32 @@ export class ClashService {
         return uniqueName;
     }
 
-    private mergeGroups(allGroups: any[], newGroups: any[]): void {
-        for (const group of newGroups) {
-            const existingIndex = allGroups.findIndex(g => g.name === group.name);
-            if (existingIndex === -1) {
-                allGroups.push(group);
-            }
+    private async saveConfigCache(configId: string, config: ClashConfig): Promise<void> {
+        try {
+            await fs.mkdir(CACHE_DIR, { recursive: true });
+            const cachePath = this.getCachePath(configId);
+            await fs.writeFile(cachePath, JSON.stringify(config), 'utf8');
+        } catch (error) {
+            logger.warn(`Failed to save cache for config ${configId}: ${(error as Error).message}`);
         }
     }
 
-    private mergeRules(allRules: string[], newRules: string[]): void {
-        for (const rule of newRules) {
-            if (!allRules.includes(rule) && !rule.includes('MATCH')) {
-                allRules.push(rule);
+    private async loadConfigCache(configId: string): Promise<ClashConfig | null> {
+        try {
+            const cachePath = this.getCachePath(configId);
+            const content = await fs.readFile(cachePath, 'utf8');
+            const parsed = JSON.parse(content) as ClashConfig;
+            if (!parsed.proxies || !Array.isArray(parsed.proxies)) {
+                return null;
             }
+            return parsed;
+        } catch {
+            return null;
         }
+    }
+
+    private getCachePath(configId: string): string {
+        return path.join(CACHE_DIR, `${configId}.json`);
     }
 
     private classifyProxiesByRegion(proxies: ClashProxy[]): { regionGroups: Map<string, string[]>; unmatched: string[] } {
@@ -187,10 +231,76 @@ export class ClashService {
         return { regionGroups, unmatched };
     }
 
-    private generateProxyGroups(allProxies: ClashProxy[], existingGroups: any[], rules?: Scheme['rules']): any[] {
+    private async buildAppRules(appRules: AppRouteRule[]): Promise<{
+        ruleProviders: Record<string, any>;
+        appRuleEntries: string[];
+        appGroupNames: string[];
+    }> {
+        const ruleProviders: Record<string, any> = {};
+        const appRuleEntries: string[] = [];
+        // 收集实际使用的代理组名称（去重、保序）
+        const groupSet = new Set<string>();
+
+        // 先收集所有应用级规则的 appName，用于分类展开时跳过
+        const appLevelNames = new Set<string>();
+        for (const rule of appRules) {
+            if (rule.type !== 'category') {
+                appLevelNames.add(rule.appName);
+            }
+        }
+
+        // 获取可用应用列表，用于展开分类规则
+        const availableApps = await appRuleService.getAvailableApps();
+
+        for (const rule of appRules) {
+            if (rule.type === 'category') {
+                const ruleTarget = this.normalizePolicyTarget(rule.group);
+                // 分类规则：展开为该分类下所有应用
+                const isUncategorizedRule = rule.appName === UNCATEGORIZED_GROUP_LABEL || rule.appName === UNCATEGORIZED_GROUP_KEY;
+                const appsInCategory = availableApps.filter(a => {
+                    if (isUncategorizedRule) return !a.defaultGroup;
+                    return a.defaultGroup === rule.appName;
+                });
+                for (const app of appsInCategory) {
+                    // 应用级规则优先：跳过已有应用级规则的 app
+                    if (appLevelNames.has(app.name)) continue;
+                    ruleProviders[app.name] = {
+                        type: 'http',
+                        behavior: 'classical',
+                        url: AppRuleService.getRuleUrl(app.name),
+                        path: `./ruleset/${app.name}.yaml`,
+                        interval: 86400,
+                    };
+                    appRuleEntries.push(`RULE-SET,${app.name},${ruleTarget}`);
+                }
+                groupSet.add(ruleTarget);
+            } else {
+                // 应用级规则：保持原有逻辑
+                const ruleTarget = this.normalizePolicyTarget(rule.appName);
+                ruleProviders[rule.appName] = {
+                    type: 'http',
+                    behavior: 'classical',
+                    url: AppRuleService.getRuleUrl(rule.appName),
+                    path: `./ruleset/${rule.appName}.yaml`,
+                    interval: 86400,
+                };
+                appRuleEntries.push(`RULE-SET,${rule.appName},${ruleTarget}`);
+                groupSet.add(ruleTarget);
+            }
+        }
+
+        return {
+            ruleProviders,
+            appRuleEntries,
+            appGroupNames: [...groupSet],
+        };
+    }
+
+    private generateProxyGroups(allProxies: ClashProxy[], rules?: Scheme['rules'], appGroupNames?: string[]): any[] {
         const proxyNames = allProxies.map(p => p.name);
         const useRegionGrouping = rules?.regionGrouping ?? false;
         const regionGroupMode = rules?.regionGroupMode ?? 'select';
+        let regionProxyGroups: any[] = [];
 
         let defaultGroups: any[];
 
@@ -198,44 +308,87 @@ export class ClashService {
             const { regionGroups, unmatched } = this.classifyProxiesByRegion(allProxies);
 
             // 创建地域代理组
-            const regionProxyGroups: any[] = [];
             const regionGroupNames: string[] = [];
 
             for (const [groupName, members] of regionGroups) {
                 regionGroupNames.push(groupName);
+                const urlTestGroupName = `${groupName} · URLTest`;
+                const fallbackGroupName = `${groupName} · Failover`;
+                const parentProxies = regionGroupMode === 'url-test'
+                    ? [urlTestGroupName, fallbackGroupName, ...members]
+                    : regionGroupMode === 'fallback'
+                        ? [fallbackGroupName, urlTestGroupName, ...members]
+                        : [...members, urlTestGroupName, fallbackGroupName];
+
                 const group: any = {
                     name: groupName,
-                    type: regionGroupMode,
-                    proxies: members,
+                    type: 'select',
+                    proxies: parentProxies,
                 };
-                if (regionGroupMode === 'url-test') {
-                    group.url = 'http://www.gstatic.com/generate_204';
-                    group.interval = 300;
-                }
-                regionProxyGroups.push(group);
+                regionProxyGroups.push(
+                    {
+                        name: urlTestGroupName,
+                        type: 'url-test',
+                        proxies: members,
+                        url: 'http://www.gstatic.com/generate_204',
+                        interval: 300,
+                        hidden: true
+                    },
+                    {
+                        name: fallbackGroupName,
+                        type: 'fallback',
+                        proxies: members,
+                        url: 'http://www.gstatic.com/generate_204',
+                        interval: 300,
+                        hidden: true
+                    },
+                    group
+                );
             }
 
             // 未匹配节点归入「其他」组
             if (unmatched.length > 0) {
                 const otherGroupName = '🌐 其他';
                 regionGroupNames.push(otherGroupName);
+                const urlTestGroupName = `${otherGroupName} · URLTest`;
+                const fallbackGroupName = `${otherGroupName} · Failover`;
+                const parentProxies = regionGroupMode === 'url-test'
+                    ? [urlTestGroupName, fallbackGroupName, ...unmatched]
+                    : regionGroupMode === 'fallback'
+                        ? [fallbackGroupName, urlTestGroupName, ...unmatched]
+                        : [...unmatched, urlTestGroupName, fallbackGroupName];
+
                 const group: any = {
                     name: otherGroupName,
-                    type: regionGroupMode,
-                    proxies: unmatched,
+                    type: 'select',
+                    proxies: parentProxies,
                 };
-                if (regionGroupMode === 'url-test') {
-                    group.url = 'http://www.gstatic.com/generate_204';
-                    group.interval = 300;
-                }
-                regionProxyGroups.push(group);
+                regionProxyGroups.push(
+                    {
+                        name: urlTestGroupName,
+                        type: 'url-test',
+                        proxies: unmatched,
+                        url: 'http://www.gstatic.com/generate_204',
+                        interval: 300,
+                        hidden: true
+                    },
+                    {
+                        name: fallbackGroupName,
+                        type: 'fallback',
+                        proxies: unmatched,
+                        url: 'http://www.gstatic.com/generate_204',
+                        interval: 300,
+                        hidden: true
+                    },
+                    group
+                );
             }
 
             defaultGroups = [
                 {
                     name: '🔰 节点选择',
                     type: 'select',
-                    proxies: ['♻️ 自动选择', '🎯 全球直连', ...regionGroupNames]
+                    proxies: ['♻️ 自动选择', 'DIRECT', ...regionGroupNames]
                 },
                 {
                     name: '♻️ 自动选择',
@@ -244,24 +397,13 @@ export class ClashService {
                     url: 'http://www.gstatic.com/generate_204',
                     interval: 300
                 },
-                ...regionProxyGroups,
-                {
-                    name: '🎯 全球直连',
-                    type: 'select',
-                    proxies: ['DIRECT']
-                },
-                {
-                    name: '🛑 全球拦截',
-                    type: 'select',
-                    proxies: ['REJECT']
-                }
             ];
         } else {
             defaultGroups = [
                 {
                     name: '🔰 节点选择',
                     type: 'select',
-                    proxies: ['♻️ 自动选择', '🎯 全球直连', ...proxyNames]
+                    proxies: ['♻️ 自动选择', 'DIRECT', ...proxyNames]
                 },
                 {
                     name: '♻️ 自动选择',
@@ -270,43 +412,56 @@ export class ClashService {
                     url: 'http://www.gstatic.com/generate_204',
                     interval: 300
                 },
-                {
-                    name: '🎯 全球直连',
-                    type: 'select',
-                    proxies: ['DIRECT']
-                },
-                {
-                    name: '🛑 全球拦截',
-                    type: 'select',
-                    proxies: ['REJECT']
-                }
             ];
         }
 
-        const defaultGroupNames = new Set(defaultGroups.map(group => group.name));
-        const allGroupNames = new Set([
-            ...defaultGroups.map(group => group.name),
-            ...existingGroups.map(group => group.name)
-        ]);
+        // 生成应用路由代理组
+        if (appGroupNames && appGroupNames.length > 0) {
+            const appGroupNamesToCreate = appGroupNames.filter(name => name !== 'DIRECT' && name !== 'REJECT');
+            if (appGroupNamesToCreate.length === 0) {
+                if (useRegionGrouping) {
+                    defaultGroups.push(...regionProxyGroups);
+                }
+                return defaultGroups;
+            }
 
-        const updatedGroups = existingGroups
-            .filter(group => !defaultGroupNames.has(group.name))
-            .map(group => {
-                if (!Array.isArray(group.proxies)) {
-                    return group;
+            // 构建应用代理组的可选项
+            const appGroupProxies = ['🔰 节点选择', 'DIRECT', 'REJECT', '♻️ 自动选择'];
+            if (useRegionGrouping) {
+                const { regionGroups, unmatched } = this.classifyProxiesByRegion(allProxies);
+                for (const [groupName] of regionGroups) {
+                    appGroupProxies.push(groupName);
+                }
+                if (unmatched.length > 0) {
+                    appGroupProxies.push('🌐 其他');
+                }
+            }
+
+            const appProxyGroups = appGroupNamesToCreate.map(groupName => {
+                if (groupName === '🖧 本地局域网') {
+                    return {
+                        name: groupName,
+                        type: 'select',
+                        // 局域网分组可直接选择所有具体节点
+                        proxies: ['DIRECT', 'REJECT', '♻️ 自动选择', ...proxyNames],
+                    };
                 }
 
                 return {
-                    ...group,
-                    proxies: group.proxies.filter((proxy: string) =>
-                        proxyNames.includes(proxy)
-                        || ['DIRECT', 'REJECT'].includes(proxy)
-                        || allGroupNames.has(proxy)
-                    )
+                    name: groupName,
+                    type: 'select',
+                    proxies: appGroupProxies,
                 };
             });
 
-        return [...defaultGroups, ...updatedGroups];
+            defaultGroups.push(...appProxyGroups);
+        }
+
+        if (useRegionGrouping) {
+            defaultGroups.push(...regionProxyGroups);
+        }
+
+        return defaultGroups;
     }
 }
 

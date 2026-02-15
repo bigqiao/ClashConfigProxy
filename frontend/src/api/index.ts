@@ -1,5 +1,5 @@
 import axios from 'axios'
-import type { Scheme, Config, APIResponse } from '@shared/types'
+import type { Scheme, Config, APIResponse, AvailableApp } from '@shared/types'
 
 const apiClient = axios.create({
     baseURL: '/api',
@@ -89,6 +89,28 @@ export const api = {
 
     async getNodes(schemeName: string): Promise<APIResponse<{ proxies: any[]; groups: any[] }>> {
         const response = await apiClient.get(`/schemes/${encodeURIComponent(schemeName)}/nodes`)
+        return response.data
+    },
+
+    // App Rules
+    async getAvailableApps(): Promise<APIResponse<{ apps: AvailableApp[]; groups: string[] }>> {
+        const response = await apiClient.get('/available-apps')
+        return response.data
+    },
+
+    async refreshAvailableApps(): Promise<APIResponse<{ apps: AvailableApp[]; groups: string[]; count: number }>> {
+        const response = await apiClient.post('/available-apps/refresh')
+        return response.data
+    },
+
+    // App Categories (global)
+    async getAppCategories(): Promise<APIResponse<{ mapping: Record<string, string>; overrides: Record<string, string>; groups: string[]; customGroups: string[] }>> {
+        const response = await apiClient.get('/app-categories')
+        return response.data
+    },
+
+    async updateAppCategories(overrides: Record<string, string>, customGroups?: string[]): Promise<APIResponse> {
+        const response = await apiClient.put('/app-categories', { overrides, customGroups })
         return response.data
     },
 

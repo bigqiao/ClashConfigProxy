@@ -8,6 +8,7 @@ import { schemeRoutes } from './routes/schemes';
 import { configRoutes } from './routes/configs';
 import { aggregateRoutes } from './routes/aggregate';
 import { logger } from './utils/logger';
+import { appRuleService } from './services/appRuleService';
 
 const app = express();
 const PORT = Number(process.env.PORT) || 8888;
@@ -37,4 +38,5 @@ app.use(errorHandler);
 app.listen(PORT, HOST, () => {
     logger.info(`Server running on ${HOST}:${PORT}`);
     console.log(`🚀 Server running on http://${HOST}:${PORT}`);
+    appRuleService.start();
 });

@@ -227,7 +227,7 @@ router.get('/schemes/:name/configs/:id/preview', async (req, res) => {
             });
         }
 
-        const result = await clashService.fetchConfig(config.url);
+        const result = await clashService.fetchConfigWithCache(config);
         if (!result.success || !result.config) {
             return res.status(500).json({
                 success: false,

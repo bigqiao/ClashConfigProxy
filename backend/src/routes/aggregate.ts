@@ -2,7 +2,8 @@ import { Router } from 'express';
 import yaml from 'js-yaml';
 import { dataService } from '../services/dataService';
 import { clashService } from '../services/clashService';
-import type { APIResponse } from '../../../shared/dist/types';
+import { appRuleService, APP_GROUPS } from '../services/appRuleService';
+import type { APIResponse, AvailableApp } from '../../../shared/dist/types';
 import { logger } from '../utils/logger';
 
 const router = Router();
@@ -141,6 +142,95 @@ router.get('/status', async (req, res) => {
         res.status(500).json({
             success: false,
             error: '获取系统状态失败'
+        });
+    }
+});
+
+router.get('/available-apps', async (_req, res) => {
+    try {
+        const apps = await appRuleService.getAvailableApps();
+        const customGroups = await appRuleService.getCustomGroups();
+        const groups = [...APP_GROUPS, ...customGroups];
+        const response: APIResponse<{ apps: AvailableApp[]; groups: string[] }> = {
+            success: true,
+            data: { apps, groups }
+        };
+        res.json(response);
+    } catch (error) {
+        logger.error('获取可用应用列表失败:', error as Error);
+        res.status(500).json({
+            success: false,
+            error: '获取可用应用列表失败'
+        });
+    }
+});
+
+router.get('/app-categories', async (_req, res) => {
+    try {
+        const apps = await appRuleService.getAvailableApps();
+        const overrides = await appRuleService.getCategoryOverrides();
+        const customGroups = await appRuleService.getCustomGroups();
+        // 构建完整的应用→分类映射
+        const mapping: Record<string, string> = {};
+        for (const app of apps) {
+            if (app.defaultGroup) {
+                mapping[app.name] = app.defaultGroup;
+            }
+        }
+        const groups = [...APP_GROUPS, ...customGroups];
+        const response: APIResponse<{ mapping: Record<string, string>; overrides: Record<string, string>; groups: string[]; customGroups: string[] }> = {
+            success: true,
+            data: { mapping, overrides, groups, customGroups }
+        };
+        res.json(response);
+    } catch (error) {
+        logger.error('获取应用分类失败:', error as Error);
+        res.status(500).json({
+            success: false,
+            error: '获取应用分类失败'
+        });
+    }
+});
+
+router.put('/app-categories', async (req, res) => {
+    try {
+        const { overrides, customGroups } = req.body;
+        if (!overrides || typeof overrides !== 'object') {
+            return res.status(400).json({
+                success: false,
+                error: '请求体需要 overrides 字段'
+            });
+        }
+        await appRuleService.updateCategoryOverrides(overrides, customGroups);
+        const response: APIResponse = {
+            success: true,
+            message: '应用分类已更新'
+        };
+        res.json(response);
+    } catch (error) {
+        logger.error('更新应用分类失败:', error as Error);
+        res.status(500).json({
+            success: false,
+            error: '更新应用分类失败'
+        });
+    }
+});
+
+router.post('/available-apps/refresh', async (_req, res) => {
+    try {
+        const apps = await appRuleService.refresh();
+        const customGroups = await appRuleService.getCustomGroups();
+        const groups = [...APP_GROUPS, ...customGroups];
+        const response: APIResponse<{ apps: AvailableApp[]; groups: string[]; count: number }> = {
+            success: true,
+            data: { apps, groups, count: apps.length }
+        };
+        res.json(response);
+    } catch (error) {
+        logger.error('刷新可用应用列表失败:', error as Error);
+        res.status(500).json({
+            success: false,
+            error: '刷新可用应用列表失败'
         });
     }
 });

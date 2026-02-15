@@ -268,4 +268,15 @@ onMounted(() => {
 .schemes-header h2 {
     margin: 0;
 }
+
+@media (max-width: 767px) {
+    .schemes {
+        padding: 12px;
+    }
+
+    :deep(.el-dialog) {
+        width: 90% !important;
+        margin: 0 auto;
+    }
+}
 </style>

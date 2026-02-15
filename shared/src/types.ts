@@ -8,12 +8,24 @@ export interface Config {
     error?: string;
 }
 
+export interface AppRouteRule {
+    appName: string;              // 应用名或分类名
+    group: string;                // 代理组
+    type?: 'app' | 'category';   // 默认 'app'（向后兼容）
+}
+
+export interface AvailableApp {
+    name: string;
+    defaultGroup?: string;
+}
+
 export interface AggregateRule {
     deduplication: 'by_name' | 'by_server' | 'none';
     nameConflictResolve: 'rename' | 'skip' | 'override';
     enabledOnly: boolean;
     regionGrouping?: boolean;
-    regionGroupMode?: 'select' | 'url-test';
+    regionGroupMode?: 'select' | 'url-test' | 'fallback';
+    appRules?: AppRouteRule[];
 }
 
 export interface Scheme {
