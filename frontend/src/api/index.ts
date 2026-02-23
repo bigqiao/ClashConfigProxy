@@ -1,5 +1,6 @@
 import axios from 'axios'
-import type { Scheme, Config, APIResponse, AvailableApp } from '@shared/types'
+import type { Scheme, Config, APIResponse, AvailableApp, AuthUser } from '@shared/types'
+import { getAccessToken } from '@/utils/authContext'
 
 const apiClient = axios.create({
     baseURL: '/api',
@@ -14,7 +15,51 @@ apiClient.interceptors.response.use(
     }
 )
 
+apiClient.interceptors.request.use((config) => {
+    const token = getAccessToken()
+    config.headers = config.headers || {}
+    if (token) {
+        config.headers.Authorization = `Bearer ${token}`
+    }
+    return config
+})
+
+export const buildSubscriptionPath = (schemeName: string): string => {
+    const token = getAccessToken()
+    const basePath = `/api/schemes/${encodeURIComponent(schemeName)}/clash`
+    if (!token) {
+        return basePath
+    }
+    return `${basePath}?accessToken=${encodeURIComponent(token)}`
+}
+
 export const api = {
+    // Auth
+    async register(username: string, password: string): Promise<APIResponse<{ token: string; user: AuthUser }>> {
+        const response = await apiClient.post('/auth/register', { username, password })
+        return response.data
+    },
+
+    async login(username: string, password: string): Promise<APIResponse<{ token: string; user: AuthUser }>> {
+        const response = await apiClient.post('/auth/login', { username, password })
+        return response.data
+    },
+
+    async getCurrentUser(): Promise<APIResponse<AuthUser>> {
+        const response = await apiClient.get('/auth/me')
+        return response.data
+    },
+
+    async logout(): Promise<APIResponse> {
+        const response = await apiClient.post('/auth/logout')
+        return response.data
+    },
+
+    async changePassword(oldPassword: string, newPassword: string): Promise<APIResponse> {
+        const response = await apiClient.post('/auth/change-password', { oldPassword, newPassword })
+        return response.data
+    },
+
     // Schemes
     async getSchemes(): Promise<APIResponse<Scheme[]>> {
         const response = await apiClient.get('/schemes')

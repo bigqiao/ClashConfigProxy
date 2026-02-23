@@ -100,7 +100,7 @@ import { ref, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useSchemesStore } from '@/stores/schemes'
-import { api } from '@/api'
+import { api, buildSubscriptionPath } from '@/api'
 
 const schemesStore = useSchemesStore()
 const { schemes } = storeToRefs(schemesStore)
@@ -117,7 +117,7 @@ const loadData = async () => {
 }
 
 const copyConfigUrl = async (schemeName: string) => {
-    const url = `${window.location.origin}/api/schemes/${encodeURIComponent(schemeName)}/clash`
+    const url = `${window.location.origin}${buildSubscriptionPath(schemeName)}`
     try {
         await navigator.clipboard.writeText(url)
         ElMessage.success('配置URL已复制到剪贴板')

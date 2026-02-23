@@ -30,7 +30,7 @@ const REGION_PATTERNS: { name: string; emoji: string; pattern: RegExp }[] = [
 ];
 const UNCATEGORIZED_GROUP_LABEL = '📦 未分类';
 const UNCATEGORIZED_GROUP_KEY = '__uncategorized__';
-const CACHE_DIR = path.join(process.cwd(), 'data', 'cache');
+const USER_DATA_ROOT = path.join(process.cwd(), 'data', 'users');
 
 export class ClashService {
     private normalizePolicyTarget(group: string): string {
@@ -42,7 +42,7 @@ export class ClashService {
     async fetchConfig(url: string): Promise<{ success: boolean; config?: ClashConfig; error?: string }> {
         try {
             const response = await axios.get(url, {
-                timeout: 30000,
+                timeout: 5000,
                 headers: {
                     'User-Agent': 'clash-config-proxy/1.0.0'
                 }
@@ -69,14 +69,19 @@ export class ClashService {
         }
     }
 
-    async fetchConfigWithCache(config: Config): Promise<{ success: boolean; config?: ClashConfig; error?: string; fromCache?: boolean }> {
-        const liveResult = await this.fetchConfig(config.url);
+    async fetchConfigWithCache(userId: string, config: Config): Promise<{ success: boolean; config?: ClashConfig; error?: string; fromCache?: boolean }> {
+        const url = (config.url || '').trim();
+        if (!url) {
+            return { success: false, error: '配置URL为空' };
+        }
+
+        const liveResult = await this.fetchConfig(url);
         if (liveResult.success && liveResult.config) {
-            await this.saveConfigCache(config.id, liveResult.config);
+            await this.saveConfigCache(userId, config.id, liveResult.config);
             return { ...liveResult, fromCache: false };
         }
 
-        const cachedConfig = await this.loadConfigCache(config.id);
+        const cachedConfig = await this.loadConfigCache(userId, config.id);
         if (cachedConfig) {
             logger.warn(`Using cached config for ${config.name} (${config.id}) due to fetch failure: ${liveResult.error}`);
             return { success: true, config: cachedConfig, fromCache: true, error: liveResult.error };
@@ -85,20 +90,44 @@ export class ClashService {
         return liveResult;
     }
 
-    async aggregateConfigs(scheme: Scheme): Promise<ClashConfig> {
+    async resolveConfig(userId: string, config: Config): Promise<{ success: boolean; config?: ClashConfig; error?: string; fromCache?: boolean }> {
+        if (config.sourceType === 'custom') {
+            if (!config.customProxy) {
+                return { success: false, error: '自定义节点为空' };
+            }
+            return {
+                success: true,
+                config: {
+                    proxies: [config.customProxy],
+                    'proxy-groups': [],
+                    rules: [],
+                }
+            };
+        }
+
+        return this.fetchConfigWithCache(userId, config);
+    }
+
+    async aggregateConfigs(userId: string, scheme: Scheme): Promise<ClashConfig> {
         const enabledOnly = scheme.rules?.enabledOnly ?? true;
         const targetConfigs = enabledOnly ? scheme.configs.filter(c => c.enabled) : scheme.configs;
         const allProxies: ClashProxy[] = [];
 
-        for (const config of targetConfigs) {
-            const result = await this.fetchConfigWithCache(config);
+        const results = await Promise.all(
+            targetConfigs.map(async (config) => ({
+                config,
+                result: await this.resolveConfig(userId, config)
+            }))
+        );
+
+        for (const { config, result } of results) {
             if (result.success && result.config) {
                 this.mergeProxies(allProxies, result.config.proxies, scheme.rules, config.name);
             }
         }
 
         const appRules = scheme.rules?.appRules || [];
-        const { ruleProviders, appRuleEntries, appGroupNames } = await this.buildAppRules(appRules);
+        const { ruleProviders, appRuleEntries, appGroupNames } = await this.buildAppRules(userId, appRules);
 
         const config: ClashConfig = {
             'mixed-port': 7890,
@@ -183,19 +212,19 @@ export class ClashService {
         return uniqueName;
     }
 
-    private async saveConfigCache(configId: string, config: ClashConfig): Promise<void> {
+    private async saveConfigCache(userId: string, configId: string, config: ClashConfig): Promise<void> {
         try {
-            await fs.mkdir(CACHE_DIR, { recursive: true });
-            const cachePath = this.getCachePath(configId);
+            const cachePath = this.getCachePath(userId, configId);
+            await fs.mkdir(path.dirname(cachePath), { recursive: true });
             await fs.writeFile(cachePath, JSON.stringify(config), 'utf8');
         } catch (error) {
             logger.warn(`Failed to save cache for config ${configId}: ${(error as Error).message}`);
         }
     }
 
-    private async loadConfigCache(configId: string): Promise<ClashConfig | null> {
+    private async loadConfigCache(userId: string, configId: string): Promise<ClashConfig | null> {
         try {
-            const cachePath = this.getCachePath(configId);
+            const cachePath = this.getCachePath(userId, configId);
             const content = await fs.readFile(cachePath, 'utf8');
             const parsed = JSON.parse(content) as ClashConfig;
             if (!parsed.proxies || !Array.isArray(parsed.proxies)) {
@@ -207,8 +236,8 @@ export class ClashService {
         }
     }
 
-    private getCachePath(configId: string): string {
-        return path.join(CACHE_DIR, `${configId}.json`);
+    private getCachePath(userId: string, configId: string): string {
+        return path.join(USER_DATA_ROOT, userId, 'cache', `${configId}.json`);
     }
 
     private classifyProxiesByRegion(proxies: ClashProxy[]): { regionGroups: Map<string, string[]>; unmatched: string[] } {
@@ -231,7 +260,7 @@ export class ClashService {
         return { regionGroups, unmatched };
     }
 
-    private async buildAppRules(appRules: AppRouteRule[]): Promise<{
+    private async buildAppRules(userId: string, appRules: AppRouteRule[]): Promise<{
         ruleProviders: Record<string, any>;
         appRuleEntries: string[];
         appGroupNames: string[];
@@ -250,7 +279,7 @@ export class ClashService {
         }
 
         // 获取可用应用列表，用于展开分类规则
-        const availableApps = await appRuleService.getAvailableApps();
+        const availableApps = await appRuleService.getAvailableApps(userId);
 
         for (const rule of appRules) {
             if (rule.type === 'category') {

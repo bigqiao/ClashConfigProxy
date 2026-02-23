@@ -4,9 +4,7 @@ import path from 'path';
 import type { AvailableApp } from '../../../shared/dist/types';
 import { logger } from '../utils/logger';
 
-const DATA_DIR = path.resolve(__dirname, '../../../data');
-const CACHE_FILE = path.join(DATA_DIR, 'available-apps.json');
-const CATEGORY_OVERRIDES_FILE = path.join(DATA_DIR, 'app-categories.json');
+const DATA_ROOT_DIR = path.resolve(__dirname, '../../../data/users');
 const GITHUB_API_BASE = 'https://api.github.com/repos/blackmatrix7/ios_rule_script/contents/rule/Clash';
 const RULE_URL_BASE = 'https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/rule/Clash';
 
@@ -348,10 +346,27 @@ interface CategoryOverridesData {
 }
 
 export class AppRuleService {
-    private cachedApps: AvailableApp[] | null = null;
+    private cachedAppsByUser = new Map<string, AvailableApp[]>();
     private updateTimer: NodeJS.Timeout | null = null;
-    private categoryOverrides: Record<string, string> | null = null;
-    private customGroups: string[] | null = null;
+    private knownUsers = new Set<string>();
+    private categoryOverridesByUser = new Map<string, Record<string, string>>();
+    private customGroupsByUser = new Map<string, string[]>();
+
+    private getUserDataDir(userId: string): string {
+        return path.join(DATA_ROOT_DIR, userId);
+    }
+
+    private getCacheFilePath(userId: string): string {
+        return path.join(this.getUserDataDir(userId), 'available-apps.json');
+    }
+
+    private getCategoryOverridesFilePath(userId: string): string {
+        return path.join(this.getUserDataDir(userId), 'app-categories.json');
+    }
+
+    private registerUser(userId: string): void {
+        this.knownUsers.add(userId);
+    }
 
     /** 获取规则集 URL */
     static getRuleUrl(appName: string): string {
@@ -360,15 +375,12 @@ export class AppRuleService {
 
     /** 启动定时更新 */
     start(): void {
-        // 启动时异步加载
-        this.loadOrFetch().catch(err => {
-            logger.error('初始加载应用列表失败:', err);
-        });
         // 每日定时更新
         this.updateTimer = setInterval(() => {
-            this.fetchFromGitHub().catch(err => {
-                logger.error('定时更新应用列表失败:', err);
-            });
+            const users = [...this.knownUsers];
+            Promise.all(users.map(userId => this.fetchFromGitHub(userId).catch(err => {
+                logger.error(`定时更新应用列表失败(${userId}):`, err as Error);
+            }))).catch(() => undefined);
         }, UPDATE_INTERVAL);
     }
 
@@ -380,70 +392,78 @@ export class AppRuleService {
     }
 
     /** 获取可用应用列表（合并用户自定义分类覆盖） */
-    async getAvailableApps(): Promise<AvailableApp[]> {
-        if (this.cachedApps) {
-            return this.applyCategoryOverrides(this.cachedApps);
+    async getAvailableApps(userId: string): Promise<AvailableApp[]> {
+        this.registerUser(userId);
+        const cachedApps = this.cachedAppsByUser.get(userId);
+        if (cachedApps) {
+            return this.applyCategoryOverrides(userId, cachedApps);
         }
-        const apps = await this.loadOrFetch();
-        return this.applyCategoryOverrides(apps);
+        const apps = await this.loadOrFetch(userId);
+        return this.applyCategoryOverrides(userId, apps);
     }
 
     /** 手动刷新 */
-    async refresh(): Promise<AvailableApp[]> {
-        const apps = await this.fetchFromGitHub();
-        return this.applyCategoryOverrides(apps);
+    async refresh(userId: string): Promise<AvailableApp[]> {
+        this.registerUser(userId);
+        const apps = await this.fetchFromGitHub(userId);
+        return this.applyCategoryOverrides(userId, apps);
     }
 
     /** 获取用户自定义分类覆盖 */
-    async getCategoryOverrides(): Promise<Record<string, string>> {
-        if (this.categoryOverrides) {
-            return this.categoryOverrides;
+    async getCategoryOverrides(userId: string): Promise<Record<string, string>> {
+        this.registerUser(userId);
+        const overrides = this.categoryOverridesByUser.get(userId);
+        if (overrides) {
+            return overrides;
         }
-        await this.loadCategoryData();
-        return this.categoryOverrides!;
+        await this.loadCategoryData(userId);
+        return this.categoryOverridesByUser.get(userId) || {};
     }
 
     /** 获取用户自定义分类组 */
-    async getCustomGroups(): Promise<string[]> {
-        if (this.customGroups) {
-            return this.customGroups;
+    async getCustomGroups(userId: string): Promise<string[]> {
+        this.registerUser(userId);
+        const customGroups = this.customGroupsByUser.get(userId);
+        if (customGroups) {
+            return customGroups;
         }
-        await this.loadCategoryData();
-        return this.customGroups!;
+        await this.loadCategoryData(userId);
+        return this.customGroupsByUser.get(userId) || [];
     }
 
     /** 从文件加载分类数据（overrides + customGroups） */
-    private async loadCategoryData(): Promise<void> {
+    private async loadCategoryData(userId: string): Promise<void> {
+        const filePath = this.getCategoryOverridesFilePath(userId);
         try {
-            const data = await fs.readFile(CATEGORY_OVERRIDES_FILE, 'utf8');
+            const data = await fs.readFile(filePath, 'utf8');
             const parsed: CategoryOverridesData = JSON.parse(data);
-            this.categoryOverrides = parsed.overrides;
-            this.customGroups = parsed.customGroups || [];
+            this.categoryOverridesByUser.set(userId, parsed.overrides || {});
+            this.customGroupsByUser.set(userId, parsed.customGroups || []);
         } catch {
-            this.categoryOverrides = {};
-            this.customGroups = [];
+            this.categoryOverridesByUser.set(userId, {});
+            this.customGroupsByUser.set(userId, []);
         }
     }
 
     /** 保存用户自定义分类覆盖 */
-    async updateCategoryOverrides(overrides: Record<string, string>, customGroups?: string[]): Promise<void> {
-        await fs.mkdir(path.dirname(CATEGORY_OVERRIDES_FILE), { recursive: true });
-        const existing = await this.getCustomGroups();
+    async updateCategoryOverrides(userId: string, overrides: Record<string, string>, customGroups?: string[]): Promise<void> {
+        this.registerUser(userId);
+        const filePath = this.getCategoryOverridesFilePath(userId);
+        await fs.mkdir(path.dirname(filePath), { recursive: true });
+        const existing = await this.getCustomGroups(userId);
         const data: CategoryOverridesData = {
             overrides,
             customGroups: customGroups ?? existing,
             updatedAt: new Date().toISOString(),
         };
-        await fs.writeFile(CATEGORY_OVERRIDES_FILE, JSON.stringify(data, null, 4), 'utf8');
-        this.categoryOverrides = overrides;
-        this.customGroups = data.customGroups ?? [];
-        // 清除缓存的应用列表，下次获取时重新合并
-        this.cachedApps = null;
+        await fs.writeFile(filePath, JSON.stringify(data, null, 4), 'utf8');
+        this.categoryOverridesByUser.set(userId, overrides);
+        this.customGroupsByUser.set(userId, data.customGroups ?? []);
     }
 
     /** 将用户覆盖合并到应用列表 */
-    private async applyCategoryOverrides(apps: AvailableApp[]): Promise<AvailableApp[]> {
-        const overrides = await this.getCategoryOverrides();
+    private async applyCategoryOverrides(userId: string, apps: AvailableApp[]): Promise<AvailableApp[]> {
+        const overrides = await this.getCategoryOverrides(userId);
         if (Object.keys(overrides).length === 0) return apps;
         return apps.map(app => ({
             ...app,
@@ -451,27 +471,31 @@ export class AppRuleService {
         }));
     }
 
-    private async loadOrFetch(): Promise<AvailableApp[]> {
+    private async loadOrFetch(userId: string): Promise<AvailableApp[]> {
+        this.registerUser(userId);
+        const cacheFile = this.getCacheFilePath(userId);
         // 尝试从缓存文件加载
         try {
-            const data = await fs.readFile(CACHE_FILE, 'utf8');
+            const data = await fs.readFile(cacheFile, 'utf8');
             const cache: CacheData = JSON.parse(data);
             const age = Date.now() - new Date(cache.updatedAt).getTime();
             if (age < UPDATE_INTERVAL) {
-                this.cachedApps = cache.apps.map(name => ({
+                const apps = cache.apps.map(name => ({
                     name,
                     defaultGroup: DEFAULT_GROUP_MAP[name],
                 }));
-                logger.info(`从缓存加载了 ${this.cachedApps.length} 个应用规则`);
-                return this.cachedApps;
+                this.cachedAppsByUser.set(userId, apps);
+                logger.info(`从缓存加载了 ${apps.length} 个应用规则 (userId=${userId})`);
+                return apps;
             }
         } catch {
             // 缓存不存在或无效，继续从 GitHub 拉取
         }
-        return this.fetchFromGitHub();
+        return this.fetchFromGitHub(userId);
     }
 
-    private async fetchFromGitHub(): Promise<AvailableApp[]> {
+    private async fetchFromGitHub(userId: string): Promise<AvailableApp[]> {
+        this.registerUser(userId);
         logger.info('开始从 GitHub 拉取应用规则列表...');
         const nameSet = new Set<string>();
 
@@ -502,22 +526,24 @@ export class AppRuleService {
 
         // 保存缓存
         try {
-            await fs.mkdir(path.dirname(CACHE_FILE), { recursive: true });
+            const cacheFile = this.getCacheFilePath(userId);
+            await fs.mkdir(path.dirname(cacheFile), { recursive: true });
             const cache: CacheData = {
                 apps: allNames,
                 updatedAt: new Date().toISOString(),
             };
-            await fs.writeFile(CACHE_FILE, JSON.stringify(cache, null, 4), 'utf8');
+            await fs.writeFile(cacheFile, JSON.stringify(cache, null, 4), 'utf8');
         } catch (error) {
             logger.error('保存应用列表缓存失败:', error as Error);
         }
 
-        this.cachedApps = allNames.map(name => ({
+        const apps = allNames.map(name => ({
             name,
             defaultGroup: DEFAULT_GROUP_MAP[name],
         }));
+        this.cachedAppsByUser.set(userId, apps);
 
-        return this.cachedApps;
+        return apps;
     }
 }
 

@@ -1,7 +1,9 @@
 export interface Config {
     id: string;
     name: string;
-    url: string;
+    sourceType?: 'url' | 'custom';
+    url?: string;
+    customProxy?: ClashProxy;
     enabled: boolean;
     lastFetch?: Date;
     status: 'success' | 'error' | 'pending';
@@ -71,4 +73,10 @@ export interface APIResponse<T = any> {
     data?: T;
     error?: string;
     message?: string;
+}
+
+export interface AuthUser {
+    id: string;
+    username: string;
+    createdAt: Date;
 }

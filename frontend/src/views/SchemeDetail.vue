@@ -29,7 +29,14 @@
             <el-tab-pane label="配置管理" name="configs">
                 <el-table v-loading="loading" :data="currentScheme.configs" stripe>
                     <el-table-column prop="name" label="配置名称" width="150" />
-                    <el-table-column prop="url" label="配置URL" show-overflow-tooltip />
+                    <el-table-column label="配置来源" show-overflow-tooltip>
+                        <template #default="{ row }">
+                            <span v-if="(row.sourceType || 'url') === 'custom'">
+                                自定义节点: {{ row.customProxy?.server }}:{{ row.customProxy?.port }}
+                            </span>
+                            <span v-else>{{ row.url }}</span>
+                        </template>
+                    </el-table-column>
                     <el-table-column label="状态" width="100">
                         <template #default="{ row }">
                             <el-tag
@@ -161,12 +168,40 @@
             width="500px"
         >
             <el-form :model="configForm" :rules="configRules" ref="configFormRef" label-width="100px">
+                <el-form-item label="来源类型">
+                    <el-radio-group v-model="configForm.sourceType">
+                        <el-radio value="url">URL订阅</el-radio>
+                        <el-radio value="custom">自定义节点</el-radio>
+                    </el-radio-group>
+                </el-form-item>
                 <el-form-item label="配置名称" prop="name">
                     <el-input v-model="configForm.name" placeholder="请输入配置名称" />
                 </el-form-item>
-                <el-form-item label="配置URL" prop="url">
+                <el-form-item v-if="configForm.sourceType === 'url'" label="配置URL" prop="url">
                     <el-input v-model="configForm.url" placeholder="https://example.com/config.yaml" />
                 </el-form-item>
+                <template v-else>
+                    <el-form-item label="节点名称" prop="customProxy.name">
+                        <el-input v-model="configForm.customProxy.name" placeholder="如: HK-01" />
+                    </el-form-item>
+                    <el-form-item label="协议类型" prop="customProxy.type">
+                        <el-input v-model="configForm.customProxy.type" placeholder="如: ss / vmess / trojan" />
+                    </el-form-item>
+                    <el-form-item label="服务器" prop="customProxy.server">
+                        <el-input v-model="configForm.customProxy.server" placeholder="如: hk.example.com" />
+                    </el-form-item>
+                    <el-form-item label="端口" prop="customProxy.port">
+                        <el-input-number v-model="configForm.customProxy.port" :min="1" :max="65535" style="width: 100%;" />
+                    </el-form-item>
+                    <el-form-item label="额外参数JSON">
+                        <el-input
+                            v-model="configForm.customProxyExtra"
+                            type="textarea"
+                            :rows="4"
+                            placeholder='如: {"cipher":"aes-128-gcm","password":"xxxx"}'
+                        />
+                    </el-form-item>
+                </template>
                 <el-form-item label="启用状态">
                     <el-switch v-model="configForm.enabled" />
                 </el-form-item>
@@ -185,13 +220,41 @@
             title="编辑配置"
             width="500px"
         >
-            <el-form :model="editConfigForm" :rules="configRules" ref="editConfigFormRef" label-width="100px">
+            <el-form :model="editConfigForm" :rules="editConfigRules" ref="editConfigFormRef" label-width="100px">
+                <el-form-item label="来源类型">
+                    <el-radio-group v-model="editConfigForm.sourceType">
+                        <el-radio value="url">URL订阅</el-radio>
+                        <el-radio value="custom">自定义节点</el-radio>
+                    </el-radio-group>
+                </el-form-item>
                 <el-form-item label="配置名称" prop="name">
                     <el-input v-model="editConfigForm.name" placeholder="请输入配置名称" />
                 </el-form-item>
-                <el-form-item label="配置URL" prop="url">
+                <el-form-item v-if="editConfigForm.sourceType === 'url'" label="配置URL" prop="url">
                     <el-input v-model="editConfigForm.url" placeholder="https://example.com/config.yaml" />
                 </el-form-item>
+                <template v-else>
+                    <el-form-item label="节点名称" prop="customProxy.name">
+                        <el-input v-model="editConfigForm.customProxy.name" />
+                    </el-form-item>
+                    <el-form-item label="协议类型" prop="customProxy.type">
+                        <el-input v-model="editConfigForm.customProxy.type" />
+                    </el-form-item>
+                    <el-form-item label="服务器" prop="customProxy.server">
+                        <el-input v-model="editConfigForm.customProxy.server" />
+                    </el-form-item>
+                    <el-form-item label="端口" prop="customProxy.port">
+                        <el-input-number v-model="editConfigForm.customProxy.port" :min="1" :max="65535" style="width: 100%;" />
+                    </el-form-item>
+                    <el-form-item label="额外参数JSON">
+                        <el-input
+                            v-model="editConfigForm.customProxyExtra"
+                            type="textarea"
+                            :rows="4"
+                            placeholder='如: {"cipher":"aes-128-gcm","password":"xxxx"}'
+                        />
+                    </el-form-item>
+                </template>
                 <el-form-item label="启用状态">
                     <el-switch v-model="editConfigForm.enabled" />
                 </el-form-item>
@@ -308,8 +371,8 @@ import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useSchemesStore } from '@/stores/schemes'
-import { api } from '@/api'
-import type { Config, AppRouteRule, AvailableApp } from '@shared/types'
+import { api, buildSubscriptionPath } from '@/api'
+import type { Config, AppRouteRule, AvailableApp, ClashProxy } from '@shared/types'
 
 interface Props {
     name: string
@@ -433,17 +496,99 @@ watch(appDialogSearch, (q) => {
 })
 
 const configForm = reactive({
+    sourceType: 'url' as 'url' | 'custom',
     name: '',
     url: '',
+    customProxy: {
+        name: '',
+        type: '',
+        server: '',
+        port: 443
+    },
+    customProxyExtra: '',
     enabled: true
 })
 
 const editConfigForm = reactive({
     id: '',
+    sourceType: 'url' as 'url' | 'custom',
     name: '',
     url: '',
+    customProxy: {
+        name: '',
+        type: '',
+        server: '',
+        port: 443
+    },
+    customProxyExtra: '',
     enabled: true
 })
+
+const validateUrlBySource = (_rule: unknown, value: string, callback: (error?: Error) => void) => {
+    if (configForm.sourceType !== 'url') {
+        callback()
+        return
+    }
+    if (!value || !value.trim()) {
+        callback(new Error('请输入配置URL'))
+        return
+    }
+    try {
+        const parsed = new URL(value)
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            callback(new Error('URL必须以http://或https://开头'))
+            return
+        }
+        callback()
+    } catch {
+        callback(new Error('请输入有效的URL'))
+    }
+}
+
+const validateEditUrlBySource = (_rule: unknown, value: string, callback: (error?: Error) => void) => {
+    if (editConfigForm.sourceType !== 'url') {
+        callback()
+        return
+    }
+    if (!value || !value.trim()) {
+        callback(new Error('请输入配置URL'))
+        return
+    }
+    try {
+        const parsed = new URL(value)
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            callback(new Error('URL必须以http://或https://开头'))
+            return
+        }
+        callback()
+    } catch {
+        callback(new Error('请输入有效的URL'))
+    }
+}
+
+const validateProxyField = (sourceType: 'url' | 'custom', value: string, callback: (error?: Error) => void, message: string) => {
+    if (sourceType !== 'custom') {
+        callback()
+        return
+    }
+    if (!value || !value.trim()) {
+        callback(new Error(message))
+        return
+    }
+    callback()
+}
+
+const validateProxyPort = (sourceType: 'url' | 'custom', value: number, callback: (error?: Error) => void) => {
+    if (sourceType !== 'custom') {
+        callback()
+        return
+    }
+    if (!Number.isInteger(value) || value < 1 || value > 65535) {
+        callback(new Error('端口范围必须在 1-65535'))
+        return
+    }
+    callback()
+}
 
 const configRules: FormRules = {
     name: [
@@ -451,8 +596,41 @@ const configRules: FormRules = {
         { min: 1, max: 50, message: '名称长度在 1 到 50 个字符', trigger: 'blur' }
     ],
     url: [
-        { required: true, message: '请输入配置URL', trigger: 'blur' },
-        { type: 'url', message: '请输入有效的URL', trigger: 'blur' }
+        { validator: validateUrlBySource, trigger: 'blur' }
+    ],
+    'customProxy.name': [
+        { validator: (_rule: unknown, value: unknown, callback: (error?: Error) => void) => validateProxyField(configForm.sourceType, String(value || ''), callback, '请输入节点名称'), trigger: 'blur' }
+    ],
+    'customProxy.type': [
+        { validator: (_rule: unknown, value: unknown, callback: (error?: Error) => void) => validateProxyField(configForm.sourceType, String(value || ''), callback, '请输入协议类型'), trigger: 'blur' }
+    ],
+    'customProxy.server': [
+        { validator: (_rule: unknown, value: unknown, callback: (error?: Error) => void) => validateProxyField(configForm.sourceType, String(value || ''), callback, '请输入服务器地址'), trigger: 'blur' }
+    ],
+    'customProxy.port': [
+        { validator: (_rule: unknown, value: unknown, callback: (error?: Error) => void) => validateProxyPort(configForm.sourceType, Number(value), callback), trigger: 'change' }
+    ]
+}
+
+const editConfigRules: FormRules = {
+    name: [
+        { required: true, message: '请输入配置名称', trigger: 'blur' },
+        { min: 1, max: 50, message: '名称长度在 1 到 50 个字符', trigger: 'blur' }
+    ],
+    url: [
+        { validator: validateEditUrlBySource, trigger: 'blur' }
+    ],
+    'customProxy.name': [
+        { validator: (_rule: unknown, value: unknown, callback: (error?: Error) => void) => validateProxyField(editConfigForm.sourceType, String(value || ''), callback, '请输入节点名称'), trigger: 'blur' }
+    ],
+    'customProxy.type': [
+        { validator: (_rule: unknown, value: unknown, callback: (error?: Error) => void) => validateProxyField(editConfigForm.sourceType, String(value || ''), callback, '请输入协议类型'), trigger: 'blur' }
+    ],
+    'customProxy.server': [
+        { validator: (_rule: unknown, value: unknown, callback: (error?: Error) => void) => validateProxyField(editConfigForm.sourceType, String(value || ''), callback, '请输入服务器地址'), trigger: 'blur' }
+    ],
+    'customProxy.port': [
+        { validator: (_rule: unknown, value: unknown, callback: (error?: Error) => void) => validateProxyPort(editConfigForm.sourceType, Number(value), callback), trigger: 'change' }
     ]
 }
 
@@ -535,7 +713,7 @@ const handleRulesChange = async () => {
 }
 
 const copyConfigUrl = async () => {
-    const url = `${window.location.origin}/api/schemes/${encodeURIComponent(props.name)}/clash`
+    const url = `${window.location.origin}${buildSubscriptionPath(props.name)}`
     try {
         await navigator.clipboard.writeText(url)
         ElMessage.success('配置URL已复制到剪贴板')
@@ -571,6 +749,56 @@ const refreshConfig = async (configId: string) => {
     }
 }
 
+const parseExtraProxyFields = (raw: string) => {
+    const content = raw.trim()
+    if (!content) {
+        return {}
+    }
+    try {
+        const parsed = JSON.parse(content)
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+            throw new Error('额外参数必须是JSON对象')
+        }
+        return parsed as Record<string, unknown>
+    } catch (error: any) {
+        throw new Error(error?.message || '额外参数JSON格式错误')
+    }
+}
+
+const buildCustomProxy = (
+    sourceType: 'url' | 'custom',
+    proxy: { name: string; type: string; server: string; port: number },
+    extraRaw: string
+): ClashProxy | undefined => {
+    if (sourceType !== 'custom') {
+        return undefined
+    }
+    const extra = parseExtraProxyFields(extraRaw)
+    return {
+        ...extra,
+        name: proxy.name.trim(),
+        type: proxy.type.trim(),
+        server: proxy.server.trim(),
+        port: Number(proxy.port)
+    } as ClashProxy
+}
+
+const resetAddForm = () => {
+    Object.assign(configForm, {
+        sourceType: 'url',
+        name: '',
+        url: '',
+        customProxy: {
+            name: '',
+            type: '',
+            server: '',
+            port: 443
+        },
+        customProxyExtra: '',
+        enabled: true
+    })
+}
+
 const handleAddConfig = async () => {
     if (!configFormRef.value) return
 
@@ -578,20 +806,44 @@ const handleAddConfig = async () => {
     if (!valid) return
 
     try {
-        await schemesStore.addConfig(props.name, configForm)
+        await schemesStore.addConfig(props.name, {
+            name: configForm.name.trim(),
+            sourceType: configForm.sourceType,
+            url: configForm.sourceType === 'url' ? configForm.url.trim() : undefined,
+            customProxy: buildCustomProxy(configForm.sourceType, configForm.customProxy, configForm.customProxyExtra),
+            enabled: configForm.enabled,
+            status: configForm.sourceType === 'custom' ? 'success' : 'pending',
+            lastFetch: configForm.sourceType === 'custom' ? new Date() : undefined
+        })
         showAddDialog.value = false
-        Object.assign(configForm, { name: '', url: '', enabled: true })
+        resetAddForm()
         ElMessage.success('配置添加成功')
-    } catch (error) {
-        ElMessage.error('添加失败')
+    } catch (error: any) {
+        ElMessage.error(error?.message || '添加失败')
     }
 }
 
 const handleEditConfig = (config: Config) => {
+    const sourceType = config.sourceType || 'url'
+    const proxy = config.customProxy
+    const proxyExtra = proxy ? { ...proxy } as Record<string, unknown> : {}
+    delete proxyExtra.name
+    delete proxyExtra.type
+    delete proxyExtra.server
+    delete proxyExtra.port
+
     Object.assign(editConfigForm, {
         id: config.id,
         name: config.name,
-        url: config.url,
+        sourceType,
+        url: config.url || '',
+        customProxy: {
+            name: proxy?.name || '',
+            type: proxy?.type || '',
+            server: proxy?.server || '',
+            port: proxy?.port || 443
+        },
+        customProxyExtra: Object.keys(proxyExtra).length > 0 ? JSON.stringify(proxyExtra, null, 2) : '',
         enabled: config.enabled
     })
     showEditDialog.value = true
@@ -604,15 +856,18 @@ const handleUpdateConfig = async () => {
     if (!valid) return
 
     try {
+        const customProxy = buildCustomProxy(editConfigForm.sourceType, editConfigForm.customProxy, editConfigForm.customProxyExtra)
         await schemesStore.updateConfig(props.name, editConfigForm.id, {
-            name: editConfigForm.name,
-            url: editConfigForm.url,
+            name: editConfigForm.name.trim(),
+            sourceType: editConfigForm.sourceType,
+            url: editConfigForm.sourceType === 'url' ? editConfigForm.url.trim() : undefined,
+            customProxy,
             enabled: editConfigForm.enabled
         })
         showEditDialog.value = false
         ElMessage.success('配置更新成功')
-    } catch (error) {
-        ElMessage.error('更新失败')
+    } catch (error: any) {
+        ElMessage.error(error?.message || '更新失败')
     }
 }
 

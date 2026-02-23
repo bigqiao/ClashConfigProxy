@@ -1,56 +1,69 @@
 <template>
     <el-config-provider :locale="zhCn">
         <div class="app">
-            <el-container class="layout">
-                <el-header>
-                    <div class="header">
-                        <div class="header-left">
-                            <el-button
-                                class="menu-toggle"
-                                type="info"
-                                @click="menuVisible = !menuVisible"
-                                :icon="Operation"
-                                circle
-                            />
-                            <h1>🔰 Clash 配置聚合系统</h1>
+            <router-view v-if="isAuthPage" />
+            <template v-else>
+                <el-container class="layout">
+                    <el-header>
+                        <div class="header">
+                            <div class="header-left">
+                                <el-button
+                                    class="menu-toggle"
+                                    type="info"
+                                    @click="menuVisible = !menuVisible"
+                                    :icon="Operation"
+                                    circle
+                                />
+                                <h1>🔰 Clash 配置聚合系统</h1>
+                            </div>
+                            <div class="header-actions">
+                                <div class="user-panel">
+                                    <div class="user-badge">
+                                        <span class="user-dot" />
+                                        <span class="username">{{ authStore.user?.username || '-' }}</span>
+                                    </div>
+                                    <el-button text class="logout-btn" @click="handleLogout">退出</el-button>
+                                </div>
+                                <el-button class="theme-btn" @click="toggleDark" circle>
+                                    <el-icon><Moon v-if="!isDark" /><Sunny v-else /></el-icon>
+                                </el-button>
+                            </div>
                         </div>
-                        <div class="header-actions">
-                            <el-button type="info" @click="toggleDark" circle>
-                                <el-icon><Moon v-if="!isDark" /><Sunny v-else /></el-icon>
-                            </el-button>
-                        </div>
-                    </div>
-                </el-header>
-                <el-container>
-                    <el-aside :width="asideWidth" :class="{ 'aside-hidden': !menuVisible }">
-                        <el-menu
-                            :default-active="$route.path"
-                            router
-                            :collapse="isCollapsed"
-                            class="menu"
-                            @select="onMenuSelect"
-                        >
-                            <el-menu-item index="/">
-                                <el-icon><Home /></el-icon>
-                                <span>概览</span>
-                            </el-menu-item>
-                            <el-menu-item index="/schemes">
-                                <el-icon><Folder /></el-icon>
-                                <span>方案管理</span>
-                            </el-menu-item>
-                            <el-menu-item index="/app-categories">
-                                <el-icon><Grid /></el-icon>
-                                <span>应用分类</span>
-                            </el-menu-item>
-                        </el-menu>
-                    </el-aside>
-                    <el-main>
-                        <router-view />
-                    </el-main>
+                    </el-header>
+                    <el-container>
+                        <el-aside :width="asideWidth" :class="{ 'aside-hidden': !menuVisible }">
+                            <el-menu
+                                :default-active="$route.path"
+                                router
+                                :collapse="isCollapsed"
+                                class="menu"
+                                @select="onMenuSelect"
+                            >
+                                <el-menu-item index="/">
+                                    <el-icon><Home /></el-icon>
+                                    <span>概览</span>
+                                </el-menu-item>
+                                <el-menu-item index="/schemes">
+                                    <el-icon><Folder /></el-icon>
+                                    <span>方案管理</span>
+                                </el-menu-item>
+                                <el-menu-item index="/app-categories">
+                                    <el-icon><Grid /></el-icon>
+                                    <span>应用分类</span>
+                                </el-menu-item>
+                                <el-menu-item index="/account">
+                                    <el-icon><Setting /></el-icon>
+                                    <span>账户设置</span>
+                                </el-menu-item>
+                            </el-menu>
+                        </el-aside>
+                        <el-main>
+                            <router-view />
+                        </el-main>
+                    </el-container>
                 </el-container>
-            </el-container>
-            <!-- 移动端遮罩 -->
-            <div v-if="menuVisible && isMobile" class="aside-overlay" @click="menuVisible = false" />
+                <div v-if="menuVisible && isMobile" class="aside-overlay" @click="menuVisible = false" />
+            </template>
         </div>
     </el-config-provider>
 </template>
@@ -58,13 +71,19 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { Operation } from '@element-plus/icons-vue'
+import { useRoute, useRouter } from 'vue-router'
 import zhCn from 'element-plus/es/locale/lang/zh-cn'
+import { useAuthStore } from '@/stores/auth'
 
+const route = useRoute()
+const router = useRouter()
+const authStore = useAuthStore()
 const isDark = ref(false)
 const windowWidth = ref(window.innerWidth)
 const isMobile = computed(() => windowWidth.value < 768)
 const isCollapsed = ref(false)
 const menuVisible = ref(!isMobile.value)
+const isAuthPage = computed(() => route.path === '/auth')
 const asideWidth = computed(() => {
     if (isMobile.value) return '200px'
     return '200px'
@@ -85,6 +104,11 @@ const onMenuSelect = () => {
     }
 }
 
+const handleLogout = async () => {
+    await authStore.logout()
+    router.replace('/auth')
+}
+
 const toggleDark = () => {
     isDark.value = !isDark.value
     if (isDark.value) {
@@ -103,6 +127,11 @@ onMounted(() => {
         document.documentElement.classList.add('dark')
     }
     window.addEventListener('resize', onResize)
+    authStore.restore().then(() => {
+        if (!authStore.isAuthenticated && !isAuthPage.value) {
+            router.replace('/auth')
+        }
+    }).catch(() => undefined)
 })
 
 onUnmounted(() => {
@@ -149,6 +178,58 @@ onUnmounted(() => {
     border-right: none;
 }
 
+.username {
+    color: #2f3d4d;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.user-panel {
+    height: 36px;
+    border: 1px solid #d7dee8;
+    border-radius: 999px;
+    padding: 0 6px 0 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: linear-gradient(180deg, #ffffff, #f7f9fc);
+}
+
+.user-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.user-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #3b82f6;
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.18);
+}
+
+.logout-btn {
+    color: #556274;
+    padding: 0 10px;
+}
+
+.logout-btn:hover {
+    color: #1f2d3d;
+}
+
+.theme-btn {
+    background: #f3f5f8;
+    border: 1px solid #d7dee8;
+    color: #677587;
+}
+
 .aside-overlay {
     display: none;
 }
@@ -164,6 +245,22 @@ onUnmounted(() => {
 
     .header {
         padding: 0 12px;
+    }
+
+    .username {
+        max-width: 90px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .user-panel {
+        height: 32px;
+        padding: 0 4px 0 8px;
+    }
+
+    .logout-btn {
+        padding: 0 6px;
     }
 
     :deep(.el-aside) {

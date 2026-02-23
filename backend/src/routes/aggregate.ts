@@ -10,7 +10,7 @@ const router = Router();
 
 router.get('/schemes/:name/clash', async (req, res) => {
     try {
-        const scheme = await dataService.getScheme(req.params.name);
+        const scheme = await dataService.getScheme(req.userId, req.params.name);
         if (!scheme) {
             return res.status(404).json({
                 success: false,
@@ -25,7 +25,7 @@ router.get('/schemes/:name/clash', async (req, res) => {
             });
         }
 
-        const aggregatedConfig = await clashService.aggregateConfigs(scheme);
+        const aggregatedConfig = await clashService.aggregateConfigs(req.userId, scheme);
 
         res.setHeader('Content-Type', 'text/yaml; charset=utf-8');
         res.send(yaml.dump(aggregatedConfig));
@@ -40,7 +40,7 @@ router.get('/schemes/:name/clash', async (req, res) => {
 
 router.get('/schemes/:name/nodes', async (req, res) => {
     try {
-        const scheme = await dataService.getScheme(req.params.name);
+        const scheme = await dataService.getScheme(req.userId, req.params.name);
         if (!scheme) {
             return res.status(404).json({
                 success: false,
@@ -54,7 +54,7 @@ router.get('/schemes/:name/nodes', async (req, res) => {
             });
         }
 
-        const aggregatedConfig = await clashService.aggregateConfigs(scheme);
+        const aggregatedConfig = await clashService.aggregateConfigs(req.userId, scheme);
 
         const response: APIResponse<{ proxies: any[]; groups: any[] }> = {
             success: true,
@@ -75,7 +75,7 @@ router.get('/schemes/:name/nodes', async (req, res) => {
 
 router.post('/schemes/:name/refresh-all', async (req, res) => {
     try {
-        const scheme = await dataService.getScheme(req.params.name);
+        const scheme = await dataService.getScheme(req.userId, req.params.name);
         if (!scheme) {
             return res.status(404).json({
                 success: false,
@@ -84,7 +84,7 @@ router.post('/schemes/:name/refresh-all', async (req, res) => {
         }
 
         const refreshPromises = scheme.configs.map(async (config) => {
-            const result = await clashService.fetchConfig(config.url);
+            const result = await clashService.resolveConfig(req.userId, config);
             const updatedConfig = {
                 ...config,
                 status: result.success ? 'success' as const : 'error' as const,
@@ -99,7 +99,7 @@ router.post('/schemes/:name/refresh-all', async (req, res) => {
         });
 
         const updatedConfigs = await Promise.all(refreshPromises);
-        await dataService.updateScheme(req.params.name, { configs: updatedConfigs });
+        await dataService.updateScheme(req.userId, req.params.name, { configs: updatedConfigs });
 
         const response: APIResponse<{ refreshed: number; failed: number }> = {
             success: true,
@@ -120,7 +120,7 @@ router.post('/schemes/:name/refresh-all', async (req, res) => {
 
 router.get('/status', async (req, res) => {
     try {
-        const schemes = await dataService.loadSchemes();
+        const schemes = await dataService.loadSchemes(req.userId);
         const totalConfigs = schemes.reduce((sum, scheme) => sum + scheme.configs.length, 0);
         const enabledSchemes = schemes.filter(s => s.enabled).length;
 
@@ -146,10 +146,10 @@ router.get('/status', async (req, res) => {
     }
 });
 
-router.get('/available-apps', async (_req, res) => {
+router.get('/available-apps', async (req, res) => {
     try {
-        const apps = await appRuleService.getAvailableApps();
-        const customGroups = await appRuleService.getCustomGroups();
+        const apps = await appRuleService.getAvailableApps(req.userId);
+        const customGroups = await appRuleService.getCustomGroups(req.userId);
         const groups = [...APP_GROUPS, ...customGroups];
         const response: APIResponse<{ apps: AvailableApp[]; groups: string[] }> = {
             success: true,
@@ -165,11 +165,11 @@ router.get('/available-apps', async (_req, res) => {
     }
 });
 
-router.get('/app-categories', async (_req, res) => {
+router.get('/app-categories', async (req, res) => {
     try {
-        const apps = await appRuleService.getAvailableApps();
-        const overrides = await appRuleService.getCategoryOverrides();
-        const customGroups = await appRuleService.getCustomGroups();
+        const apps = await appRuleService.getAvailableApps(req.userId);
+        const overrides = await appRuleService.getCategoryOverrides(req.userId);
+        const customGroups = await appRuleService.getCustomGroups(req.userId);
         // 构建完整的应用→分类映射
         const mapping: Record<string, string> = {};
         for (const app of apps) {
@@ -201,7 +201,7 @@ router.put('/app-categories', async (req, res) => {
                 error: '请求体需要 overrides 字段'
             });
         }
-        await appRuleService.updateCategoryOverrides(overrides, customGroups);
+        await appRuleService.updateCategoryOverrides(req.userId, overrides, customGroups);
         const response: APIResponse = {
             success: true,
             message: '应用分类已更新'
@@ -216,10 +216,10 @@ router.put('/app-categories', async (req, res) => {
     }
 });
 
-router.post('/available-apps/refresh', async (_req, res) => {
+router.post('/available-apps/refresh', async (req, res) => {
     try {
-        const apps = await appRuleService.refresh();
-        const customGroups = await appRuleService.getCustomGroups();
+        const apps = await appRuleService.refresh(req.userId);
+        const customGroups = await appRuleService.getCustomGroups(req.userId);
         const groups = [...APP_GROUPS, ...customGroups];
         const response: APIResponse<{ apps: AvailableApp[]; groups: string[]; count: number }> = {
             success: true,

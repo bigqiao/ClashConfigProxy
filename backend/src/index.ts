@@ -4,9 +4,11 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import path from 'path';
 import { errorHandler } from './middleware/errorHandler';
+import { authenticate } from './middleware/authenticate';
 import { schemeRoutes } from './routes/schemes';
 import { configRoutes } from './routes/configs';
 import { aggregateRoutes } from './routes/aggregate';
+import { authRoutes } from './routes/auth';
 import { logger } from './utils/logger';
 import { appRuleService } from './services/appRuleService';
 
@@ -20,6 +22,9 @@ app.use(helmet({
 app.use(cors());
 app.use(morgan('combined'));
 app.use(express.json());
+
+app.use('/api/auth', authRoutes);
+app.use('/api', authenticate);
 
 app.use('/api/schemes', schemeRoutes);
 app.use('/api', configRoutes);

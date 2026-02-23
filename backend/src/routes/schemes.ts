@@ -7,7 +7,7 @@ const router = Router();
 
 router.get('/', async (req, res) => {
     try {
-        const schemes = await dataService.loadSchemes();
+        const schemes = await dataService.loadSchemes(req.userId);
         const response: APIResponse<Scheme[]> = {
             success: true,
             data: schemes
@@ -39,7 +39,7 @@ router.post('/', async (req, res) => {
             enabledOnly: true
         };
 
-        const scheme = await dataService.createScheme({
+        const scheme = await dataService.createScheme(req.userId, {
             name: name.trim(),
             description: description || '',
             enabled,
@@ -63,7 +63,7 @@ router.post('/', async (req, res) => {
 
 router.get('/:name', async (req, res) => {
     try {
-        const scheme = await dataService.getScheme(req.params.name);
+        const scheme = await dataService.getScheme(req.userId, req.params.name);
         if (!scheme) {
             return res.status(404).json({
                 success: false,
@@ -92,7 +92,7 @@ router.put('/:name', async (req, res) => {
         if (description !== undefined) updates.description = description;
         if (enabled !== undefined) updates.enabled = enabled;
         if (rules !== undefined) updates.rules = rules;
-        const scheme = await dataService.updateScheme(req.params.name, updates);
+        const scheme = await dataService.updateScheme(req.userId, req.params.name, updates);
 
         const response: APIResponse<Scheme> = {
             success: true,
@@ -110,7 +110,7 @@ router.put('/:name', async (req, res) => {
 
 router.delete('/:name', async (req, res) => {
     try {
-        await dataService.deleteScheme(req.params.name);
+        await dataService.deleteScheme(req.userId, req.params.name);
         res.json({
             success: true,
             message: '方案删除成功'
