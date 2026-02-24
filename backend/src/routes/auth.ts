@@ -1,15 +1,17 @@
 import { Router } from 'express';
 import type { APIResponse, AuthUser } from '../../../shared/dist/types';
 import { authenticate } from '../middleware/authenticate';
+import { bruteForceGuard } from '../middleware/bruteForceGuard';
 import { authService } from '../services/authService';
 import { logger } from '../utils/logger';
 
 const router = Router();
 
-router.post('/register', async (req, res) => {
+router.post('/register', bruteForceGuard.guard, async (req, res) => {
     try {
         const { username, password } = req.body as { username?: string; password?: string };
         if (!username || !password) {
+            bruteForceGuard.onFailure(req);
             return res.status(400).json({
                 success: false,
                 error: '用户名和密码不能为空'
@@ -17,12 +19,14 @@ router.post('/register', async (req, res) => {
         }
 
         const result = await authService.register(username, password);
+        bruteForceGuard.onSuccess(req);
         const response: APIResponse<{ token: string; user: AuthUser }> = {
             success: true,
             data: result
         };
         res.status(201).json(response);
     } catch (error) {
+        bruteForceGuard.onFailure(req);
         logger.error('注册失败:', error as Error);
         res.status(400).json({
             success: false,
@@ -31,10 +35,11 @@ router.post('/register', async (req, res) => {
     }
 });
 
-router.post('/login', async (req, res) => {
+router.post('/login', bruteForceGuard.guard, async (req, res) => {
     try {
         const { username, password } = req.body as { username?: string; password?: string };
         if (!username || !password) {
+            bruteForceGuard.onFailure(req);
             return res.status(400).json({
                 success: false,
                 error: '用户名和密码不能为空'
@@ -42,12 +47,14 @@ router.post('/login', async (req, res) => {
         }
 
         const result = await authService.login(username, password);
+        bruteForceGuard.onSuccess(req);
         const response: APIResponse<{ token: string; user: AuthUser }> = {
             success: true,
             data: result
         };
         res.json(response);
     } catch (error) {
+        bruteForceGuard.onFailure(req);
         logger.error('登录失败:', error as Error);
         res.status(401).json({
             success: false,
