@@ -17,6 +17,7 @@ interface UserRecord {
     username: string;
     passwordHash: string;
     salt: string;
+    subscriptionToken: string;
     createdAt: string;
 }
 
@@ -57,6 +58,7 @@ export class AuthService {
             id: user.id,
             username: user.username,
             createdAt: new Date(user.createdAt),
+            subscriptionToken: user.subscriptionToken,
         };
     }
 
@@ -67,6 +69,10 @@ export class AuthService {
     private async hashPassword(password: string, salt: string): Promise<string> {
         const derived = await scryptAsync(password, salt, 64) as Buffer;
         return derived.toString('hex');
+    }
+
+    private generateSubscriptionToken(): string {
+        return crypto.randomBytes(24).toString('hex');
     }
 
     private async ensureAuthDir(): Promise<void> {
@@ -142,6 +148,7 @@ export class AuthService {
                 username,
                 salt,
                 passwordHash,
+                subscriptionToken: this.generateSubscriptionToken(),
                 createdAt: new Date().toISOString(),
             };
 
@@ -170,15 +177,26 @@ export class AuthService {
             const username = this.normalizeUsername(usernameInput);
             const users = await this.loadUsers();
             const key = this.getUsernameKey(username);
-            const user = users.find(u => this.getUsernameKey(u.username) === key);
-            if (!user) {
+            const userIndex = users.findIndex(u => this.getUsernameKey(u.username) === key);
+            if (userIndex === -1) {
                 throw new Error('用户名或密码错误');
             }
+            const user = users[userIndex];
 
             const expectedHash = await this.hashPassword(password, user.salt);
             if (expectedHash !== user.passwordHash) {
                 throw new Error('用户名或密码错误');
             }
+
+            if (!user.subscriptionToken) {
+                users[userIndex] = {
+                    ...user,
+                    subscriptionToken: this.generateSubscriptionToken()
+                };
+                await this.saveUsers(users);
+            }
+
+            const finalUser = users[userIndex];
 
             const token = crypto.randomBytes(32).toString('hex');
             await this.pruneExpiredSessions();
@@ -193,7 +211,7 @@ export class AuthService {
 
             return {
                 token,
-                user: this.toPublicUser(user),
+                user: this.toPublicUser(finalUser),
             };
         });
     }
@@ -209,8 +227,55 @@ export class AuthService {
             }
 
             const users = await this.loadUsers();
-            const user = users.find(u => u.id === session.userId);
-            return user ? this.toPublicUser(user) : null;
+            const userIndex = users.findIndex(u => u.id === session.userId);
+            if (userIndex === -1) {
+                return null;
+            }
+
+            const user = users[userIndex];
+            if (!user.subscriptionToken) {
+                users[userIndex] = {
+                    ...user,
+                    subscriptionToken: this.generateSubscriptionToken()
+                };
+                await this.saveUsers(users);
+            }
+            return this.toPublicUser(users[userIndex]);
+        });
+    }
+
+    async authenticateSubscriptionToken(subscriptionToken: string): Promise<AuthUser | null> {
+        return this.runExclusive(async () => {
+            const token = subscriptionToken.trim();
+            if (!token) {
+                return null;
+            }
+
+            const users = await this.loadUsers();
+            const userIndex = users.findIndex(u => u.subscriptionToken === token);
+            if (userIndex === -1) {
+                return null;
+            }
+
+            return this.toPublicUser(users[userIndex]);
+        });
+    }
+
+    async rotateSubscriptionToken(userId: string): Promise<string> {
+        return this.runExclusive(async () => {
+            const users = await this.loadUsers();
+            const userIndex = users.findIndex(u => u.id === userId);
+            if (userIndex === -1) {
+                throw new Error('用户不存在');
+            }
+
+            const nextToken = this.generateSubscriptionToken();
+            users[userIndex] = {
+                ...users[userIndex],
+                subscriptionToken: nextToken
+            };
+            await this.saveUsers(users);
+            return nextToken;
         });
     }
 

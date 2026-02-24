@@ -1,6 +1,6 @@
 import axios from 'axios'
 import type { Scheme, Config, APIResponse, AvailableApp, AuthUser } from '@shared/types'
-import { getAccessToken } from '@/utils/authContext'
+import { getAccessToken, getSubscriptionToken } from '@/utils/authContext'
 
 const apiClient = axios.create({
     baseURL: '/api',
@@ -25,12 +25,12 @@ apiClient.interceptors.request.use((config) => {
 })
 
 export const buildSubscriptionPath = (schemeName: string): string => {
-    const token = getAccessToken()
+    const token = getSubscriptionToken()
     const basePath = `/api/schemes/${encodeURIComponent(schemeName)}/clash`
     if (!token) {
         return basePath
     }
-    return `${basePath}?accessToken=${encodeURIComponent(token)}`
+    return `${basePath}?subscriptionToken=${encodeURIComponent(token)}`
 }
 
 export const api = {
@@ -57,6 +57,11 @@ export const api = {
 
     async changePassword(oldPassword: string, newPassword: string): Promise<APIResponse> {
         const response = await apiClient.post('/auth/change-password', { oldPassword, newPassword })
+        return response.data
+    },
+
+    async rotateSubscriptionToken(): Promise<APIResponse<{ subscriptionToken: string }>> {
+        const response = await apiClient.post('/auth/rotate-subscription-token')
         return response.data
     },
 

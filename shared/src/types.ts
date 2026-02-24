@@ -1,3 +1,9 @@
+export interface ConfigUpdateLogEntry {
+    time: string;
+    level: 'success' | 'error' | 'cache';
+    message: string;
+}
+
 export interface Config {
     id: string;
     name: string;
@@ -8,6 +14,8 @@ export interface Config {
     lastFetch?: Date;
     status: 'success' | 'error' | 'pending';
     error?: string;
+    updateLog?: string;
+    updateLogs?: ConfigUpdateLogEntry[];
 }
 
 export interface AppRouteRule {
@@ -79,4 +87,5 @@ export interface AuthUser {
     id: string;
     username: string;
     createdAt: Date;
+    subscriptionToken: string;
 }

@@ -31,6 +31,21 @@ const REGION_PATTERNS: { name: string; emoji: string; pattern: RegExp }[] = [
 const UNCATEGORIZED_GROUP_LABEL = '📦 未分类';
 const UNCATEGORIZED_GROUP_KEY = '__uncategorized__';
 const USER_DATA_ROOT = path.join(process.cwd(), 'data', 'users');
+const FAST_FETCH_TIMEOUT_MS = 5000;
+const BACKGROUND_FETCH_TIMEOUT_MS = 300000;
+
+export interface ResolveConfigResult {
+    success: boolean;
+    config?: ClashConfig;
+    error?: string;
+    fromCache?: boolean;
+    timedOut?: boolean;
+}
+
+export interface AggregatedConfigResult {
+    aggregatedConfig: ClashConfig;
+    resolvedConfigs: Array<{ config: Config; result: ResolveConfigResult }>;
+}
 
 export class ClashService {
     private normalizePolicyTarget(group: string): string {
@@ -39,10 +54,10 @@ export class ClashService {
         return group;
     }
 
-    async fetchConfig(url: string): Promise<{ success: boolean; config?: ClashConfig; error?: string }> {
+    async fetchConfig(url: string, timeoutMs: number = FAST_FETCH_TIMEOUT_MS): Promise<{ success: boolean; config?: ClashConfig; error?: string }> {
         try {
             const response = await axios.get(url, {
-                timeout: 5000,
+                timeout: timeoutMs,
                 headers: {
                     'User-Agent': 'clash-config-proxy/1.0.0'
                 }
@@ -63,34 +78,80 @@ export class ClashService {
 
             return { success: true, config };
         } catch (error) {
+            const timedOut = axios.isAxiosError(error)
+                && (error.code === 'ECONNABORTED' || (error.message || '').toLowerCase().includes('timeout'));
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             logger.error(`Failed to fetch config from ${url}:`, error as Error);
-            return { success: false, error: errorMessage };
+            return { success: false, error: timedOut ? `请求超时(${timeoutMs}ms)` : errorMessage };
         }
     }
 
-    async fetchConfigWithCache(userId: string, config: Config): Promise<{ success: boolean; config?: ClashConfig; error?: string; fromCache?: boolean }> {
+    async fetchConfigWithCache(userId: string, config: Config): Promise<ResolveConfigResult> {
         const url = (config.url || '').trim();
         if (!url) {
             return { success: false, error: '配置URL为空' };
         }
 
-        const liveResult = await this.fetchConfig(url);
-        if (liveResult.success && liveResult.config) {
-            await this.saveConfigCache(userId, config.id, liveResult.config);
-            return { ...liveResult, fromCache: false };
+        const livePromise = this.fetchConfig(url, BACKGROUND_FETCH_TIMEOUT_MS);
+        const fastGate = await Promise.race([
+            livePromise.then((result) => ({ type: 'live' as const, result })),
+            new Promise<{ type: 'timeout' }>((resolve) => {
+                setTimeout(() => resolve({ type: 'timeout' as const }), FAST_FETCH_TIMEOUT_MS);
+            }),
+        ]);
+
+        if (fastGate.type === 'live') {
+            if (fastGate.result.success && fastGate.result.config) {
+                await this.saveConfigCache(userId, config.id, fastGate.result.config);
+                return { ...fastGate.result, fromCache: false, timedOut: false };
+            }
+
+            const cachedOnFastFail = await this.loadConfigCache(userId, config.id);
+            if (cachedOnFastFail) {
+                logger.warn(`Using cached config for ${config.name} (${config.id}) due to fetch failure: ${fastGate.result.error}`);
+                return { success: true, config: cachedOnFastFail, fromCache: true, error: fastGate.result.error, timedOut: false };
+            }
+            return { ...fastGate.result, fromCache: false, timedOut: false };
         }
 
         const cachedConfig = await this.loadConfigCache(userId, config.id);
         if (cachedConfig) {
-            logger.warn(`Using cached config for ${config.name} (${config.id}) due to fetch failure: ${liveResult.error}`);
-            return { success: true, config: cachedConfig, fromCache: true, error: liveResult.error };
+            logger.warn(`Using cached config for ${config.name} (${config.id}) due to fast timeout (${FAST_FETCH_TIMEOUT_MS}ms), original fetch is still running`);
+            void livePromise.then(async (lateResult) => {
+                if (lateResult.success && lateResult.config) {
+                    await this.saveConfigCache(userId, config.id, lateResult.config);
+                    logger.info(`Original fetch finished and updated cache for ${config.name} (${config.id})`);
+                } else {
+                    logger.warn(`Original fetch failed for ${config.name} (${config.id}): ${lateResult.error || 'Unknown error'}`);
+                }
+            });
+            return {
+                success: true,
+                config: cachedConfig,
+                fromCache: true,
+                error: `请求超时(${FAST_FETCH_TIMEOUT_MS}ms)，已返回缓存并等待同一次请求在后台完成(最长${BACKGROUND_FETCH_TIMEOUT_MS}ms)`,
+                timedOut: true
+            };
         }
 
-        return liveResult;
+        logger.warn(`No cache for ${config.name} (${config.id}) at fast timeout (${FAST_FETCH_TIMEOUT_MS}ms), skipping this source for current response`);
+        void livePromise.then(async (lateResult) => {
+            if (lateResult.success && lateResult.config) {
+                await this.saveConfigCache(userId, config.id, lateResult.config);
+                logger.info(`Original fetch finished and cached result for ${config.name} (${config.id})`);
+            } else {
+                logger.warn(`Original fetch failed for ${config.name} (${config.id}): ${lateResult.error || 'Unknown error'}`);
+            }
+        });
+        return {
+            success: false,
+            fromCache: false,
+            timedOut: true,
+            error: `请求超时(${FAST_FETCH_TIMEOUT_MS}ms)，且无可用缓存`
+        };
     }
 
-    async resolveConfig(userId: string, config: Config): Promise<{ success: boolean; config?: ClashConfig; error?: string; fromCache?: boolean }> {
+    async resolveConfig(userId: string, config: Config): Promise<ResolveConfigResult> {
         if (config.sourceType === 'custom') {
             if (!config.customProxy) {
                 return { success: false, error: '自定义节点为空' };
@@ -108,7 +169,7 @@ export class ClashService {
         return this.fetchConfigWithCache(userId, config);
     }
 
-    async aggregateConfigs(userId: string, scheme: Scheme): Promise<ClashConfig> {
+    async aggregateConfigsWithResults(userId: string, scheme: Scheme): Promise<AggregatedConfigResult> {
         const enabledOnly = scheme.rules?.enabledOnly ?? true;
         const targetConfigs = enabledOnly ? scheme.configs.filter(c => c.enabled) : scheme.configs;
         const allProxies: ClashProxy[] = [];
@@ -146,7 +207,15 @@ export class ClashService {
             config['rule-providers'] = ruleProviders;
         }
 
-        return config;
+        return {
+            aggregatedConfig: config,
+            resolvedConfigs: results,
+        };
+    }
+
+    async aggregateConfigs(userId: string, scheme: Scheme): Promise<ClashConfig> {
+        const result = await this.aggregateConfigsWithResults(userId, scheme);
+        return result.aggregatedConfig;
     }
 
     private mergeProxies(

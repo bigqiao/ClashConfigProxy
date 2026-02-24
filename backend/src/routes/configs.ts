@@ -5,8 +5,11 @@ import { dataService } from '../services/dataService';
 import { clashService } from '../services/clashService';
 import type { APIResponse, Config, ClashProxy } from '../../../shared/dist/types';
 import { logger } from '../utils/logger';
+import { authenticate } from '../middleware/authenticate';
+import { applyConfigUpdateResult } from '../utils/configUpdateLog';
 
 const router = Router();
+router.use(authenticate);
 const DEFAULT_SOURCE_TYPE: NonNullable<Config['sourceType']> = 'url';
 
 const isValidProxy = (proxy: unknown): proxy is ClashProxy => {
@@ -362,17 +365,7 @@ router.post('/schemes/:name/configs/:id/refresh', async (req, res) => {
 
         const config = scheme.configs[configIndex];
         const result = await clashService.resolveConfig(req.userId, config);
-
-        const updatedConfig = {
-            ...config,
-            status: result.success ? 'success' as const : 'error' as const,
-            lastFetch: new Date()
-        };
-        if (result.success) {
-            delete updatedConfig.error;
-        } else {
-            updatedConfig.error = result.error || 'Unknown error';
-        }
+        const updatedConfig = applyConfigUpdateResult(config, result, new Date());
 
         const updatedConfigs = [...scheme.configs];
         updatedConfigs[configIndex] = updatedConfig;

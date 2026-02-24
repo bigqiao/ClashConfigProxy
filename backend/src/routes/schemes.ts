@@ -2,8 +2,10 @@ import { Router } from 'express';
 import { dataService } from '../services/dataService';
 import type { APIResponse, Scheme } from '../../../shared/dist/types';
 import { logger } from '../utils/logger';
+import { authenticate } from '../middleware/authenticate';
 
 const router = Router();
+router.use(authenticate);
 
 router.get('/', async (req, res) => {
     try {

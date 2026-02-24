@@ -4,7 +4,6 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import path from 'path';
 import { errorHandler } from './middleware/errorHandler';
-import { authenticate } from './middleware/authenticate';
 import { schemeRoutes } from './routes/schemes';
 import { configRoutes } from './routes/configs';
 import { aggregateRoutes } from './routes/aggregate';
@@ -24,11 +23,9 @@ app.use(morgan('combined'));
 app.use(express.json());
 
 app.use('/api/auth', authRoutes);
-app.use('/api', authenticate);
-
+app.use('/api', aggregateRoutes);
 app.use('/api/schemes', schemeRoutes);
 app.use('/api', configRoutes);
-app.use('/api', aggregateRoutes);
 
 if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.join(__dirname, '../../frontend/dist')));

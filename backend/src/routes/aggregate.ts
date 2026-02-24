@@ -3,12 +3,15 @@ import yaml from 'js-yaml';
 import { dataService } from '../services/dataService';
 import { clashService } from '../services/clashService';
 import { appRuleService, APP_GROUPS } from '../services/appRuleService';
-import type { APIResponse, AvailableApp } from '../../../shared/dist/types';
+import type { APIResponse, AvailableApp, Config } from '../../../shared/dist/types';
 import { logger } from '../utils/logger';
+import { authenticate } from '../middleware/authenticate';
+import { authenticateSubscription } from '../middleware/authenticateSubscription';
+import { applyConfigUpdateResult } from '../utils/configUpdateLog';
 
 const router = Router();
 
-router.get('/schemes/:name/clash', async (req, res) => {
+router.get('/schemes/:name/clash', authenticateSubscription, async (req, res) => {
     try {
         const scheme = await dataService.getScheme(req.userId, req.params.name);
         if (!scheme) {
@@ -25,7 +28,17 @@ router.get('/schemes/:name/clash', async (req, res) => {
             });
         }
 
-        const aggregatedConfig = await clashService.aggregateConfigs(req.userId, scheme);
+        const { aggregatedConfig, resolvedConfigs } = await clashService.aggregateConfigsWithResults(req.userId, scheme);
+        const now = new Date();
+        const resultMap = new Map(resolvedConfigs.map(({ config, result }) => [config.id, result]));
+        const updatedConfigs = scheme.configs.map((config) => {
+            const result = resultMap.get(config.id);
+            if (!result) {
+                return config;
+            }
+            return applyConfigUpdateResult(config, result, now);
+        });
+        await dataService.updateScheme(req.userId, req.params.name, { configs: updatedConfigs });
 
         res.setHeader('Content-Type', 'text/yaml; charset=utf-8');
         res.send(yaml.dump(aggregatedConfig));
@@ -37,6 +50,8 @@ router.get('/schemes/:name/clash', async (req, res) => {
         });
     }
 });
+
+router.use(authenticate);
 
 router.get('/schemes/:name/nodes', async (req, res) => {
     try {
@@ -85,17 +100,7 @@ router.post('/schemes/:name/refresh-all', async (req, res) => {
 
         const refreshPromises = scheme.configs.map(async (config) => {
             const result = await clashService.resolveConfig(req.userId, config);
-            const updatedConfig = {
-                ...config,
-                status: result.success ? 'success' as const : 'error' as const,
-                lastFetch: new Date()
-            };
-            if (result.success) {
-                delete updatedConfig.error;
-            } else {
-                updatedConfig.error = result.error || 'Unknown error';
-            }
-            return updatedConfig;
+            return applyConfigUpdateResult(config, result, new Date());
         });
 
         const updatedConfigs = await Promise.all(refreshPromises);

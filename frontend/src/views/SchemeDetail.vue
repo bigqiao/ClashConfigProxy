@@ -52,6 +52,26 @@
                             {{ row.lastFetch ? formatDate(row.lastFetch) : '-' }}
                         </template>
                     </el-table-column>
+                    <el-table-column label="订阅更新日志" min-width="280" show-overflow-tooltip>
+                        <template #default="{ row }">
+                            <div class="update-log-cell">
+                                <span
+                                    class="update-log"
+                                    :class="{ 'update-log-error': row.status === 'error' }"
+                                >
+                                    {{ getLatestUpdateLog(row) || '-' }}
+                                </span>
+                                <el-button
+                                    v-if="getConfigUpdateLogs(row).length > 0"
+                                    type="primary"
+                                    link
+                                    @click="openUpdateLogsDialog(row)"
+                                >
+                                    查看历史({{ getConfigUpdateLogs(row).length }})
+                                </el-button>
+                            </div>
+                        </template>
+                    </el-table-column>
                     <el-table-column label="启用" width="80">
                         <template #default="{ row }">
                             <el-switch
@@ -354,6 +374,33 @@
                 <el-button @click="showPreviewDialog = false">关闭</el-button>
             </template>
         </el-dialog>
+
+        <el-dialog
+            v-model="showUpdateLogsDialog"
+            :title="`订阅更新日志 - ${updateLogsTitle}`"
+            width="680px"
+            top="8vh"
+        >
+            <div v-if="currentUpdateLogs.length === 0" class="update-logs-empty">暂无日志</div>
+            <div v-else class="update-logs-list">
+                <div
+                    v-for="(log, idx) in currentUpdateLogs"
+                    :key="`${log.time}-${idx}`"
+                    class="update-logs-item"
+                >
+                    <div class="update-logs-meta">
+                        <el-tag :type="getLogTagType(log.level)" size="small" effect="plain">
+                            {{ getLogLevelText(log.level) }}
+                        </el-tag>
+                        <span class="update-logs-time">{{ formatDate(log.time) }}</span>
+                    </div>
+                    <div class="update-logs-message">{{ log.message }}</div>
+                </div>
+            </div>
+            <template #footer>
+                <el-button @click="showUpdateLogsDialog = false">关闭</el-button>
+            </template>
+        </el-dialog>
     </div>
     <div v-else class="loading-container">
         <el-skeleton :loading="loading" animated>
@@ -372,7 +419,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { useSchemesStore } from '@/stores/schemes'
 import { api, buildSubscriptionPath } from '@/api'
-import type { Config, AppRouteRule, AvailableApp, ClashProxy } from '@shared/types'
+import type { Config, AppRouteRule, AvailableApp, ClashProxy, ConfigUpdateLogEntry } from '@shared/types'
 
 interface Props {
     name: string
@@ -394,6 +441,9 @@ const showPreviewDialog = ref(false)
 const previewLoading = ref(false)
 const previewTitle = ref('')
 const previewContent = ref('')
+const showUpdateLogsDialog = ref(false)
+const updateLogsTitle = ref('')
+const currentUpdateLogs = ref<ConfigUpdateLogEntry[]>([])
 
 const rulesForm = reactive({
     regionGrouping: false,
@@ -452,7 +502,7 @@ const groupedAvailableApps = computed<CategoryGroup[]>(() => {
 })
 
 const getCategoryCheckState = (cat: CategoryGroup): 'none' | 'partial' | 'all' => {
-    const selectable = cat.apps.filter(a => !isAppAlreadySelected(a.name))
+    const selectable = getSelectableAppsByCategory(cat.group)
     if (selectable.length === 0) return 'none'
     const selectedCount = selectable.filter(a => appDialogSelected.value.includes(a.name)).length
     if (selectedCount === 0) return 'none'
@@ -460,8 +510,14 @@ const getCategoryCheckState = (cat: CategoryGroup): 'none' | 'partial' | 'all' =
     return 'partial'
 }
 
+const getSelectableAppsByCategory = (categoryName: string) => {
+    return availableApps.value.filter((app) => (
+        getAppCategoryName(app) === categoryName && !isAppAlreadySelected(app.name)
+    ))
+}
+
 const toggleCategory = (cat: CategoryGroup, checked: boolean) => {
-    const selectable = cat.apps.filter(a => !isAppAlreadySelected(a.name)).map(a => a.name)
+    const selectable = getSelectableAppsByCategory(cat.group).map(a => a.name)
     if (checked) {
         const current = new Set(appDialogSelected.value)
         for (const name of selectable) current.add(name)
@@ -477,9 +533,7 @@ const toggleCategory = (cat: CategoryGroup, checked: boolean) => {
 // 单个应用取消勾选时，移除对应分类的整组标记
 watch(appDialogSelected, () => {
     for (const catName of [...selectedCategories.value]) {
-        const cat = groupedAvailableApps.value.find(c => c.group === catName)
-        if (!cat) continue
-        const selectable = cat.apps.filter(a => !isAppAlreadySelected(a.name))
+        const selectable = getSelectableAppsByCategory(catName)
         if (selectable.length === 0) continue
         const allSelected = selectable.length > 0 && selectable.every(a => appDialogSelected.value.includes(a.name))
         if (!allSelected) {
@@ -637,6 +691,48 @@ const editConfigRules: FormRules = {
 const formatDate = (date: Date | string) => {
     const d = new Date(date)
     return d.toLocaleDateString('zh-CN') + ' ' + d.toLocaleTimeString('zh-CN')
+}
+
+const getConfigUpdateLogs = (config: Config): ConfigUpdateLogEntry[] => {
+    if (Array.isArray(config.updateLogs)) {
+        return [...config.updateLogs]
+            .filter(log => !!log && typeof log.time === 'string' && typeof log.message === 'string')
+            .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
+    }
+    if (config.updateLog) {
+        return [{
+            time: config.lastFetch ? new Date(config.lastFetch).toISOString() : new Date().toISOString(),
+            level: config.status === 'success' ? 'success' : 'error',
+            message: config.updateLog
+        }]
+    }
+    return []
+}
+
+const getLatestUpdateLog = (config: Config): string => {
+    const logs = getConfigUpdateLogs(config)
+    if (logs.length > 0) {
+        return logs[0].message
+    }
+    return config.error || ''
+}
+
+const openUpdateLogsDialog = (config: Config) => {
+    updateLogsTitle.value = config.name
+    currentUpdateLogs.value = getConfigUpdateLogs(config)
+    showUpdateLogsDialog.value = true
+}
+
+const getLogTagType = (level: ConfigUpdateLogEntry['level']) => {
+    if (level === 'success') return 'success'
+    if (level === 'cache') return 'warning'
+    return 'danger'
+}
+
+const getLogLevelText = (level: ConfigUpdateLogEntry['level']) => {
+    if (level === 'success') return '成功'
+    if (level === 'cache') return '缓存回退'
+    return '失败'
 }
 
 const getStatusType = (status: string) => {
@@ -932,10 +1028,7 @@ const confirmAddApps = async () => {
 
     // 整组选中的分类，作为分类规则添加
     for (const catName of selectedCategories.value) {
-        const cat = groupedAvailableApps.value.find(c => c.group === catName)
-        if (cat) {
-            for (const a of cat.apps) handledApps.add(a.name)
-        }
+        for (const a of getSelectableAppsByCategory(catName)) handledApps.add(a.name)
         if (isCategoryAlreadyAdded(catName)) continue
         newRules.push({
             appName: catName,
@@ -1162,6 +1255,62 @@ onMounted(async () => {
     text-align: center;
     color: var(--el-text-color-secondary);
     padding: 20px;
+}
+
+.update-log {
+    color: var(--el-text-color-regular);
+}
+
+.update-log-error {
+    color: var(--el-color-danger);
+}
+
+.update-log-cell {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+}
+
+.update-logs-list {
+    max-height: 56vh;
+    overflow: auto;
+    border: 1px solid var(--el-border-color-lighter);
+    border-radius: 6px;
+    padding: 8px 10px;
+}
+
+.update-logs-item {
+    padding: 8px 4px;
+    border-bottom: 1px dashed var(--el-border-color-lighter);
+}
+
+.update-logs-item:last-child {
+    border-bottom: none;
+}
+
+.update-logs-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+
+.update-logs-time {
+    color: var(--el-text-color-secondary);
+    font-size: 12px;
+}
+
+.update-logs-message {
+    color: var(--el-text-color-primary);
+    line-height: 1.5;
+    word-break: break-word;
+}
+
+.update-logs-empty {
+    color: var(--el-text-color-secondary);
+    text-align: center;
+    padding: 24px 0;
 }
 
 @media (max-width: 767px) {

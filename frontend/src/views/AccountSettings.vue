@@ -8,6 +8,15 @@
         </div>
       </template>
 
+      <div class="token-panel">
+        <div class="token-row">
+          <span class="token-label">订阅 Token</span>
+          <el-button size="small" :loading="rotatingToken" @click="rotateToken">重新生成</el-button>
+        </div>
+        <el-input :model-value="authStore.user?.subscriptionToken || ''" readonly />
+        <div class="token-tip">订阅地址将使用该 token，重新生成后旧 token 立即失效。</div>
+      </div>
+
       <el-form ref="formRef" :model="form" :rules="rules" label-position="top" class="pwd-form">
         <el-form-item label="旧密码" prop="oldPassword">
           <el-input
@@ -56,10 +65,12 @@ import { ElMessage } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { api } from '@/api'
 import { useAuthStore } from '@/stores/auth'
+import { setSubscriptionToken } from '@/utils/authContext'
 
 const authStore = useAuthStore()
 const formRef = ref<FormInstance>()
 const submitting = ref(false)
+const rotatingToken = ref(false)
 
 const form = reactive({
   oldPassword: '',
@@ -108,6 +119,29 @@ const submit = async () => {
     submitting.value = false
   }
 }
+
+const rotateToken = async () => {
+  rotatingToken.value = true
+  try {
+    const response = await api.rotateSubscriptionToken()
+    const nextToken = response.data?.subscriptionToken
+    if (!nextToken) {
+      throw new Error('生成失败')
+    }
+    setSubscriptionToken(nextToken)
+    if (authStore.user) {
+      authStore.user = {
+        ...authStore.user,
+        subscriptionToken: nextToken,
+      }
+    }
+    ElMessage.success('订阅 token 已重新生成')
+  } catch (error: any) {
+    ElMessage.error(error.response?.data?.error || '重新生成失败')
+  } finally {
+    rotatingToken.value = false
+  }
+}
 </script>
 
 <style scoped>
@@ -131,6 +165,31 @@ const submit = async () => {
 
 .pwd-form {
   margin-top: 4px;
+}
+
+.token-panel {
+  margin-bottom: 20px;
+  padding: 14px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 8px;
+  background: var(--el-fill-color-blank);
+}
+
+.token-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.token-label {
+  font-weight: 600;
+}
+
+.token-tip {
+  margin-top: 8px;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 
 .submit-btn {

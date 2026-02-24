@@ -115,4 +115,28 @@ router.post('/change-password', authenticate, async (req, res) => {
     }
 });
 
+router.post('/rotate-subscription-token', authenticate, async (req, res) => {
+    try {
+        if (!req.authUser) {
+            return res.status(401).json({
+                success: false,
+                error: '未登录或登录已过期'
+            });
+        }
+
+        const token = await authService.rotateSubscriptionToken(req.authUser.id);
+        const response: APIResponse<{ subscriptionToken: string }> = {
+            success: true,
+            data: { subscriptionToken: token }
+        };
+        res.json(response);
+    } catch (error) {
+        logger.error('重置订阅token失败:', error as Error);
+        res.status(400).json({
+            success: false,
+            error: (error as Error).message || '重置订阅token失败'
+        });
+    }
+});
+
 export { router as authRoutes };
