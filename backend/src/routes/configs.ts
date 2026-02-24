@@ -7,6 +7,7 @@ import type { APIResponse, Config, ClashProxy } from '../../../shared/dist/types
 import { logger } from '../utils/logger';
 import { authenticate } from '../middleware/authenticate';
 import { applyConfigUpdateResult } from '../utils/configUpdateLog';
+import { validateSubscriptionUrl } from '../utils/validateUrl';
 
 const router = Router();
 router.use(authenticate);
@@ -130,6 +131,16 @@ router.post('/schemes/:name/configs', async (req, res) => {
             });
         }
 
+        if (built.data.sourceType !== 'custom' && built.data.url) {
+            const urlCheck = await validateSubscriptionUrl(built.data.url);
+            if (!urlCheck.valid) {
+                return res.status(400).json({
+                    success: false,
+                    error: urlCheck.error
+                });
+            }
+        }
+
         const newConfig: Config = {
             id: uuidv4(),
             ...built.data
@@ -212,6 +223,16 @@ router.put('/schemes/:name/configs/:id', async (req, res) => {
                     success: false,
                     error: 'URL必须以http://或https://开头'
                 });
+            }
+
+            if (url !== undefined) {
+                const urlCheck = await validateSubscriptionUrl(trimmedUrl);
+                if (!urlCheck.valid) {
+                    return res.status(400).json({
+                        success: false,
+                        error: urlCheck.error
+                    });
+                }
             }
 
             updates.url = trimmedUrl;

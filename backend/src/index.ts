@@ -18,7 +18,11 @@ const HOST = '0.0.0.0';
 app.use(helmet({
     contentSecurityPolicy: false
 }));
-app.use(cors());
+const rawAllowedOrigins = process.env.ALLOWED_ORIGINS;
+const allowedOrigins = rawAllowedOrigins?.split(',').map(s => s.trim()).filter(Boolean) ?? [];
+if (allowedOrigins.length > 0) {
+    app.use(cors({ origin: allowedOrigins }));
+}
 app.use(morgan('combined'));
 app.use(express.json());
 

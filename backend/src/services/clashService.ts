@@ -5,6 +5,7 @@ import { promises as fs } from 'fs';
 import type { ClashConfig, ClashProxy, Scheme, AppRouteRule, Config } from '../../../shared/dist/types';
 import { logger } from '../utils/logger';
 import { AppRuleService, APP_GROUPS, appRuleService } from './appRuleService';
+import { validateSubscriptionUrl } from '../utils/validateUrl';
 
 const REGION_PATTERNS: { name: string; emoji: string; pattern: RegExp }[] = [
     { name: '香港', emoji: '🇭🇰', pattern: /香港|HK|Hong\s*Kong/i },
@@ -55,6 +56,10 @@ export class ClashService {
     }
 
     async fetchConfig(url: string, timeoutMs: number = FAST_FETCH_TIMEOUT_MS): Promise<{ success: boolean; config?: ClashConfig; error?: string }> {
+        const urlCheck = await validateSubscriptionUrl(url);
+        if (!urlCheck.valid) {
+            return { success: false, error: urlCheck.error };
+        }
         try {
             const response = await axios.get(url, {
                 timeout: timeoutMs,

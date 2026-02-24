@@ -10,7 +10,7 @@ const scryptAsync = promisify(crypto.scrypt);
 const AUTH_DIR = path.resolve(__dirname, '../../../data/auth');
 const USERS_FILE = path.join(AUTH_DIR, 'users.json');
 const SESSIONS_FILE = path.join(AUTH_DIR, 'sessions.json');
-const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface UserRecord {
     id: string;
@@ -38,11 +38,11 @@ export class AuthService {
     }
 
     private normalizeUsername(username: string): string {
-        return username.trim();
+        return username.trim().toLowerCase();
     }
 
     private getUsernameKey(username: string): string {
-        return this.normalizeUsername(username).toLowerCase();
+        return this.normalizeUsername(username);
     }
 
     private isValidUsername(username: string): boolean {
