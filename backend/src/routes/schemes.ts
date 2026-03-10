@@ -38,7 +38,8 @@ router.post('/', async (req, res) => {
         const defaultRules = {
             deduplication: 'by_name' as const,
             nameConflictResolve: 'rename' as const,
-            enabledOnly: true
+            enabledOnly: true,
+            catchAllGroupEnabled: false
         };
 
         const scheme = await dataService.createScheme(req.userId, {

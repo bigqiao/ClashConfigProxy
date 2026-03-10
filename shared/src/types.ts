@@ -35,6 +35,8 @@ export interface AggregateRule {
     enabledOnly: boolean;
     regionGrouping?: boolean;
     regionGroupMode?: 'select' | 'url-test' | 'fallback';
+    autoCipher?: boolean;
+    catchAllGroupEnabled?: boolean;
     appRules?: AppRouteRule[];
 }
 

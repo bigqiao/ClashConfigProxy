@@ -162,6 +162,20 @@
                         </el-radio-group>
                         <span class="form-tip">每个地域内会同时提供 URLTest、Failover 和具体节点，客户端可自由切换；这里仅决定默认顺序</span>
                     </el-form-item>
+                    <el-form-item label="加密算法自适应">
+                        <el-switch
+                            v-model="rulesForm.autoCipher"
+                            @change="handleRulesChange"
+                        />
+                        <span class="form-tip">启用后将所有节点的 cipher 字段强制设置为 auto</span>
+                    </el-form-item>
+                    <el-form-item label="漏网之鱼分组">
+                        <el-switch
+                            v-model="rulesForm.catchAllGroupEnabled"
+                            @change="handleRulesChange"
+                        />
+                        <span class="form-tip">启用后新增「🐟 漏网之鱼」组，并将未命中规则流量交给该组，方便在客户端切换默认路由</span>
+                    </el-form-item>
                 </el-form>
             </el-tab-pane>
 
@@ -448,6 +462,8 @@ const currentUpdateLogs = ref<ConfigUpdateLogEntry[]>([])
 const rulesForm = reactive({
     regionGrouping: false,
     regionGroupMode: 'url-test' as 'select' | 'url-test' | 'fallback',
+    autoCipher: false,
+    catchAllGroupEnabled: false,
 })
 
 // 应用路由相关状态
@@ -800,6 +816,8 @@ const handleRulesChange = async () => {
                 ...currentScheme.value.rules,
                 regionGrouping: rulesForm.regionGrouping,
                 regionGroupMode: rulesForm.regionGroupMode,
+                autoCipher: rulesForm.autoCipher,
+                catchAllGroupEnabled: rulesForm.catchAllGroupEnabled,
             }
         })
         ElMessage.success('聚合设置已保存')
@@ -1108,6 +1126,8 @@ const syncRulesForm = () => {
     if (currentScheme.value?.rules) {
         rulesForm.regionGrouping = currentScheme.value.rules.regionGrouping ?? false
         rulesForm.regionGroupMode = currentScheme.value.rules.regionGroupMode ?? 'url-test'
+        rulesForm.autoCipher = currentScheme.value.rules.autoCipher ?? false
+        rulesForm.catchAllGroupEnabled = currentScheme.value.rules.catchAllGroupEnabled ?? false
         selectedAppRules.value = [...(currentScheme.value.rules.appRules || [])]
     }
 }

@@ -31,6 +31,7 @@ const REGION_PATTERNS: { name: string; emoji: string; pattern: RegExp }[] = [
 ];
 const UNCATEGORIZED_GROUP_LABEL = '📦 未分类';
 const UNCATEGORIZED_GROUP_KEY = '__uncategorized__';
+const CATCH_ALL_GROUP_NAME = '🐟 漏网之鱼';
 const USER_DATA_ROOT = path.join(process.cwd(), 'data', 'users');
 const FAST_FETCH_TIMEOUT_MS = 5000;
 const BACKGROUND_FETCH_TIMEOUT_MS = 300000;
@@ -194,6 +195,7 @@ export class ClashService {
 
         const appRules = scheme.rules?.appRules || [];
         const { ruleProviders, appRuleEntries, appGroupNames } = await this.buildAppRules(userId, appRules);
+        const matchTarget = scheme.rules?.catchAllGroupEnabled ? CATCH_ALL_GROUP_NAME : 'DIRECT';
 
         const config: ClashConfig = {
             'mixed-port': 7890,
@@ -205,7 +207,7 @@ export class ClashService {
             'external-controller': '127.0.0.1:9090',
             proxies: allProxies,
             'proxy-groups': this.generateProxyGroups(allProxies, scheme.rules, appGroupNames),
-            rules: [...appRuleEntries, 'MATCH,DIRECT'],
+            rules: [...appRuleEntries, `MATCH,${matchTarget}`],
         };
 
         if (Object.keys(ruleProviders).length > 0) {
@@ -237,7 +239,7 @@ export class ClashService {
                 if (rules.nameConflictResolve === 'skip') {
                     continue;
                 } else if (rules.nameConflictResolve === 'override') {
-                    allProxies[existingIndex] = proxy;
+                    allProxies[existingIndex] = rules?.autoCipher ? { ...proxy, cipher: 'auto' } : proxy;
                     continue;
                 }
             }
@@ -247,10 +249,11 @@ export class ClashService {
                 finalName = this.generateUniqueName(allProxies, proxy.name, sourceName);
             }
 
-            allProxies.push({
-                ...proxy,
-                name: finalName
-            });
+            const mergedProxy: ClashProxy = { ...proxy, name: finalName };
+            if (rules?.autoCipher) {
+                mergedProxy.cipher = 'auto';
+            }
+            allProxies.push(mergedProxy);
         }
     }
 
@@ -332,6 +335,26 @@ export class ClashService {
         }
 
         return { regionGroups, unmatched };
+    }
+
+    private buildCatchAllProxyGroup(allProxies: ClashProxy[], useRegionGrouping: boolean): any {
+        const options = ['🔰 节点选择', 'DIRECT', 'REJECT', '♻️ 自动选择'];
+
+        if (useRegionGrouping) {
+            const { regionGroups, unmatched } = this.classifyProxiesByRegion(allProxies);
+            for (const [groupName] of regionGroups) {
+                options.push(groupName);
+            }
+            if (unmatched.length > 0) {
+                options.push('🌐 其他');
+            }
+        }
+
+        return {
+            name: CATCH_ALL_GROUP_NAME,
+            type: 'select',
+            proxies: Array.from(new Set(options)),
+        };
     }
 
     private async buildAppRules(userId: string, appRules: AppRouteRule[]): Promise<{
@@ -516,6 +539,10 @@ export class ClashService {
                     interval: 300
                 },
             ];
+        }
+
+        if (rules?.catchAllGroupEnabled) {
+            defaultGroups.push(this.buildCatchAllProxyGroup(allProxies, useRegionGrouping));
         }
 
         // 生成应用路由代理组
