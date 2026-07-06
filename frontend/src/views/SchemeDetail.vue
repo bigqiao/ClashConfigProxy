@@ -34,6 +34,9 @@
                             <span v-if="(row.sourceType || 'url') === 'custom'">
                                 自定义节点: {{ row.customProxy?.server }}:{{ row.customProxy?.port }}
                             </span>
+                            <span v-else-if="row.sourceType === 'accessToken'">
+                                AccessToken 订阅: {{ maskToken(row.accessToken) }}
+                            </span>
                             <span v-else>{{ row.url }}</span>
                         </template>
                     </el-table-column>
@@ -205,6 +208,7 @@
                 <el-form-item label="来源类型">
                     <el-radio-group v-model="configForm.sourceType">
                         <el-radio value="url">URL订阅</el-radio>
+                        <el-radio value="accessToken">AccessToken 订阅</el-radio>
                         <el-radio value="custom">自定义节点</el-radio>
                     </el-radio-group>
                 </el-form-item>
@@ -213,6 +217,9 @@
                 </el-form-item>
                 <el-form-item v-if="configForm.sourceType === 'url'" label="配置URL" prop="url">
                     <el-input v-model="configForm.url" placeholder="https://example.com/config.yaml" />
+                </el-form-item>
+                <el-form-item v-else-if="configForm.sourceType === 'accessToken'" label="AccessToken" prop="accessToken">
+                    <el-input v-model="configForm.accessToken" type="password" show-password placeholder="机场面板的 Access Token" />
                 </el-form-item>
                 <template v-else>
                     <el-form-item label="节点名称" prop="customProxy.name">
@@ -258,6 +265,7 @@
                 <el-form-item label="来源类型">
                     <el-radio-group v-model="editConfigForm.sourceType">
                         <el-radio value="url">URL订阅</el-radio>
+                        <el-radio value="accessToken">AccessToken 订阅</el-radio>
                         <el-radio value="custom">自定义节点</el-radio>
                     </el-radio-group>
                 </el-form-item>
@@ -266,6 +274,9 @@
                 </el-form-item>
                 <el-form-item v-if="editConfigForm.sourceType === 'url'" label="配置URL" prop="url">
                     <el-input v-model="editConfigForm.url" placeholder="https://example.com/config.yaml" />
+                </el-form-item>
+                <el-form-item v-else-if="editConfigForm.sourceType === 'accessToken'" label="AccessToken" prop="accessToken">
+                    <el-input v-model="editConfigForm.accessToken" type="password" show-password placeholder="机场面板的 Access Token" />
                 </el-form-item>
                 <template v-else>
                     <el-form-item label="节点名称" prop="customProxy.name">
@@ -566,9 +577,10 @@ watch(appDialogSearch, (q) => {
 })
 
 const configForm = reactive({
-    sourceType: 'url' as 'url' | 'custom',
+    sourceType: 'url' as 'url' | 'custom' | 'accessToken',
     name: '',
     url: '',
+    accessToken: '',
     customProxy: {
         name: '',
         type: '',
@@ -581,9 +593,10 @@ const configForm = reactive({
 
 const editConfigForm = reactive({
     id: '',
-    sourceType: 'url' as 'url' | 'custom',
+    sourceType: 'url' as 'url' | 'custom' | 'accessToken',
     name: '',
     url: '',
+    accessToken: '',
     customProxy: {
         name: '',
         type: '',
@@ -636,7 +649,19 @@ const validateEditUrlBySource = (_rule: unknown, value: string, callback: (error
     }
 }
 
-const validateProxyField = (sourceType: 'url' | 'custom', value: string, callback: (error?: Error) => void, message: string) => {
+const validateAccessToken = (sourceType: 'url' | 'custom' | 'accessToken', value: string, callback: (error?: Error) => void) => {
+    if (sourceType !== 'accessToken') {
+        callback()
+        return
+    }
+    if (!value || !value.trim()) {
+        callback(new Error('请输入 AccessToken'))
+        return
+    }
+    callback()
+}
+
+const validateProxyField = (sourceType: 'url' | 'custom' | 'accessToken', value: string, callback: (error?: Error) => void, message: string) => {
     if (sourceType !== 'custom') {
         callback()
         return
@@ -648,7 +673,7 @@ const validateProxyField = (sourceType: 'url' | 'custom', value: string, callbac
     callback()
 }
 
-const validateProxyPort = (sourceType: 'url' | 'custom', value: number, callback: (error?: Error) => void) => {
+const validateProxyPort = (sourceType: 'url' | 'custom' | 'accessToken', value: number, callback: (error?: Error) => void) => {
     if (sourceType !== 'custom') {
         callback()
         return
@@ -667,6 +692,9 @@ const configRules: FormRules = {
     ],
     url: [
         { validator: validateUrlBySource, trigger: 'blur' }
+    ],
+    accessToken: [
+        { validator: (_rule: unknown, value: unknown, callback: (error?: Error) => void) => validateAccessToken(configForm.sourceType, String(value || ''), callback), trigger: 'blur' }
     ],
     'customProxy.name': [
         { validator: (_rule: unknown, value: unknown, callback: (error?: Error) => void) => validateProxyField(configForm.sourceType, String(value || ''), callback, '请输入节点名称'), trigger: 'blur' }
@@ -689,6 +717,9 @@ const editConfigRules: FormRules = {
     ],
     url: [
         { validator: validateEditUrlBySource, trigger: 'blur' }
+    ],
+    accessToken: [
+        { validator: (_rule: unknown, value: unknown, callback: (error?: Error) => void) => validateAccessToken(editConfigForm.sourceType, String(value || ''), callback), trigger: 'blur' }
     ],
     'customProxy.name': [
         { validator: (_rule: unknown, value: unknown, callback: (error?: Error) => void) => validateProxyField(editConfigForm.sourceType, String(value || ''), callback, '请输入节点名称'), trigger: 'blur' }
@@ -758,6 +789,12 @@ const getStatusType = (status: string) => {
         case 'pending': return 'warning'
         default: return 'info'
     }
+}
+
+const maskToken = (token?: string) => {
+    if (!token) return ''
+    if (token.length <= 8) return '••••'
+    return `${token.slice(0, 4)}••••${token.slice(-4)}`
 }
 
 const getStatusText = (status: string) => {
@@ -880,7 +917,7 @@ const parseExtraProxyFields = (raw: string) => {
 }
 
 const buildCustomProxy = (
-    sourceType: 'url' | 'custom',
+    sourceType: 'url' | 'custom' | 'accessToken',
     proxy: { name: string; type: string; server: string; port: number },
     extraRaw: string
 ): ClashProxy | undefined => {
@@ -902,6 +939,7 @@ const resetAddForm = () => {
         sourceType: 'url',
         name: '',
         url: '',
+        accessToken: '',
         customProxy: {
             name: '',
             type: '',
@@ -924,6 +962,7 @@ const handleAddConfig = async () => {
             name: configForm.name.trim(),
             sourceType: configForm.sourceType,
             url: configForm.sourceType === 'url' ? configForm.url.trim() : undefined,
+            accessToken: configForm.sourceType === 'accessToken' ? configForm.accessToken.trim() : undefined,
             customProxy: buildCustomProxy(configForm.sourceType, configForm.customProxy, configForm.customProxyExtra),
             enabled: configForm.enabled,
             status: configForm.sourceType === 'custom' ? 'success' : 'pending',
@@ -951,6 +990,7 @@ const handleEditConfig = (config: Config) => {
         name: config.name,
         sourceType,
         url: config.url || '',
+        accessToken: config.accessToken || '',
         customProxy: {
             name: proxy?.name || '',
             type: proxy?.type || '',
@@ -975,6 +1015,7 @@ const handleUpdateConfig = async () => {
             name: editConfigForm.name.trim(),
             sourceType: editConfigForm.sourceType,
             url: editConfigForm.sourceType === 'url' ? editConfigForm.url.trim() : undefined,
+            accessToken: editConfigForm.sourceType === 'accessToken' ? editConfigForm.accessToken.trim() : undefined,
             customProxy,
             enabled: editConfigForm.enabled
         })

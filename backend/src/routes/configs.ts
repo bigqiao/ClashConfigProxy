@@ -33,10 +33,13 @@ const normalizeSourceType = (sourceType: unknown): NonNullable<Config['sourceTyp
     if (sourceType === 'custom') {
         return 'custom';
     }
+    if (sourceType === 'accessToken') {
+        return 'accessToken';
+    }
     return DEFAULT_SOURCE_TYPE;
 };
 
-const buildConfigPayload = (payload: Record<string, unknown>): { success: true; data: Pick<Config, 'name' | 'sourceType' | 'url' | 'customProxy' | 'enabled' | 'status' | 'lastFetch'> } | { success: false; error: string } => {
+const buildConfigPayload = (payload: Record<string, unknown>): { success: true; data: Pick<Config, 'name' | 'sourceType' | 'url' | 'accessToken' | 'customProxy' | 'enabled' | 'status' | 'lastFetch'> } | { success: false; error: string } => {
     const name = typeof payload.name === 'string' ? payload.name.trim() : '';
     if (!name) {
         return { success: false, error: '配置名称不能为空' };
@@ -65,6 +68,24 @@ const buildConfigPayload = (payload: Record<string, unknown>): { success: true; 
                 enabled,
                 status: 'success',
                 lastFetch: new Date()
+            }
+        };
+    }
+
+    if (sourceType === 'accessToken') {
+        const accessToken = typeof payload.accessToken === 'string' ? payload.accessToken.trim() : '';
+        if (!accessToken) {
+            return { success: false, error: 'AccessToken 不能为空' };
+        }
+
+        return {
+            success: true,
+            data: {
+                name,
+                sourceType,
+                accessToken,
+                enabled,
+                status: 'pending'
             }
         };
     }
@@ -181,7 +202,7 @@ router.put('/schemes/:name/configs/:id', async (req, res) => {
             });
         }
 
-        const { name, url, enabled, sourceType, customProxy } = req.body as Record<string, unknown>;
+        const { name, url, enabled, sourceType, customProxy, accessToken } = req.body as Record<string, unknown>;
         const updates: Partial<Config> = {};
         const currentConfig = scheme.configs[configIndex];
         const currentSourceType = normalizeSourceType(currentConfig.sourceType);
@@ -236,10 +257,39 @@ router.put('/schemes/:name/configs/:id', async (req, res) => {
             }
 
             updates.url = trimmedUrl;
+            updates.accessToken = undefined;
             updates.customProxy = undefined;
             const changedToUrl = currentSourceType !== 'url';
             const changedUrl = trimmedUrl !== (currentConfig.url || '').trim();
             updates.status = changedToUrl || changedUrl ? 'pending' : currentConfig.status;
+            if (updates.status !== 'success') {
+                updates.lastFetch = undefined;
+                updates.error = undefined;
+            }
+        } else if (targetSourceType === 'accessToken') {
+            if (accessToken !== undefined && typeof accessToken !== 'string') {
+                return res.status(400).json({
+                    success: false,
+                    error: 'AccessToken 格式无效'
+                });
+            }
+
+            const tokenToUse = accessToken !== undefined
+                ? accessToken.trim()
+                : (currentConfig.accessToken || '').trim();
+            if (!tokenToUse) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'AccessToken 不能为空'
+                });
+            }
+
+            updates.accessToken = tokenToUse;
+            updates.url = undefined;
+            updates.customProxy = undefined;
+            const changedToToken = currentSourceType !== 'accessToken';
+            const changedToken = tokenToUse !== (currentConfig.accessToken || '').trim();
+            updates.status = changedToToken || changedToken ? 'pending' : currentConfig.status;
             if (updates.status !== 'success') {
                 updates.lastFetch = undefined;
                 updates.error = undefined;
@@ -256,6 +306,7 @@ router.put('/schemes/:name/configs/:id', async (req, res) => {
             }
             updates.customProxy = proxyToUse;
             updates.url = undefined;
+            updates.accessToken = undefined;
             updates.status = 'success';
             updates.error = undefined;
             updates.lastFetch = new Date();

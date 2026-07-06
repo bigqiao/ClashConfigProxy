@@ -7,8 +7,9 @@ export interface ConfigUpdateLogEntry {
 export interface Config {
     id: string;
     name: string;
-    sourceType?: 'url' | 'custom';
+    sourceType?: 'url' | 'custom' | 'accessToken';
     url?: string;
+    accessToken?: string;
     customProxy?: ClashProxy;
     enabled: boolean;
     lastFetch?: Date;

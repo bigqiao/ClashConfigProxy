@@ -35,6 +35,8 @@ const CATCH_ALL_GROUP_NAME = '🐟 漏网之鱼';
 const USER_DATA_ROOT = path.join(process.cwd(), 'data', 'users');
 const FAST_FETCH_TIMEOUT_MS = 5000;
 const BACKGROUND_FETCH_TIMEOUT_MS = 300000;
+// AccessToken 订阅：机场面板 API 基址（POST /api/v1/managed/clash 返回下载链接）
+const ACCESS_TOKEN_API_BASE = 'https://oixcloud.com';
 
 export interface ResolveConfigResult {
     success: boolean;
@@ -100,10 +102,55 @@ export class ClashService {
         }
     }
 
+    /**
+     * 通过 AccessToken 调用机场面板 API，换取真实的 Clash 订阅下载链接。
+     * POST {base}/api/v1/managed/clash，Authorization: Bearer <token>，取响应 JSON 的 smart 字段。
+     */
+    async resolveAccessTokenUrl(accessToken: string, timeoutMs: number = FAST_FETCH_TIMEOUT_MS): Promise<{ success: boolean; url?: string; error?: string }> {
+        const token = accessToken.trim();
+        if (!token) {
+            return { success: false, error: 'AccessToken 为空' };
+        }
+        const apiUrl = `${ACCESS_TOKEN_API_BASE}/api/v1/managed/clash`;
+        try {
+            const response = await axios.post(apiUrl, null, {
+                timeout: timeoutMs,
+                headers: { 'Authorization': `Bearer ${token}` },
+            });
+            const data = response.data;
+            const smartUrl = data && typeof data === 'object' ? data.smart : undefined;
+            if (typeof smartUrl === 'string' && smartUrl.trim()) {
+                return { success: true, url: smartUrl.trim() };
+            }
+            const msg = data && typeof data === 'object' && data.msg ? String(data.msg) : 'AccessToken 未返回有效订阅链接';
+            return { success: false, error: msg };
+        } catch (error) {
+            const timedOut = axios.isAxiosError(error)
+                && (error.code === 'ECONNABORTED' || (error.message || '').toLowerCase().includes('timeout'));
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error('Failed to resolve access token subscription:', error as Error);
+            return { success: false, error: timedOut ? `AccessToken 请求超时(${timeoutMs}ms)` : errorMessage };
+        }
+    }
+
     async fetchConfigWithCache(userId: string, config: Config): Promise<ResolveConfigResult> {
-        const url = (config.url || '').trim();
-        if (!url) {
-            return { success: false, error: '配置URL为空' };
+        let url: string;
+        if (config.sourceType === 'accessToken') {
+            const resolved = await this.resolveAccessTokenUrl(config.accessToken || '');
+            if (!resolved.success || !resolved.url) {
+                const cached = await this.loadConfigCache(userId, config.id);
+                if (cached) {
+                    logger.warn(`Using cached config for ${config.name} (${config.id}) due to access token resolve failure: ${resolved.error}`);
+                    return { success: true, config: cached, fromCache: true, error: resolved.error };
+                }
+                return { success: false, error: resolved.error };
+            }
+            url = resolved.url;
+        } else {
+            url = (config.url || '').trim();
+            if (!url) {
+                return { success: false, error: '配置URL为空' };
+            }
         }
 
         const livePromise = this.fetchConfig(url, BACKGROUND_FETCH_TIMEOUT_MS);
