@@ -1,11 +1,11 @@
 import axios from 'axios';
-import yaml from 'js-yaml';
 import path from 'path';
 import { promises as fs } from 'fs';
 import type { ClashConfig, ClashProxy, Scheme, AppRouteRule, Config } from '../../../shared/dist/types';
 import { logger } from '../utils/logger';
 import { AppRuleService, APP_GROUPS, appRuleService } from './appRuleService';
 import { validateSubscriptionUrl } from '../utils/validateUrl';
+import { tryBase64Decode, tryParseClashConfig, parseProxyUriList } from '../utils/subscriptionParser';
 
 const REGION_PATTERNS: { name: string; emoji: string; pattern: RegExp }[] = [
     { name: '香港', emoji: '🇭🇰', pattern: /香港|HK|Hong\s*Kong/i },
@@ -64,25 +64,33 @@ export class ClashService {
         try {
             const response = await axios.get(url, {
                 timeout: timeoutMs,
-                headers: {
-                    'User-Agent': 'clash-config-proxy/1.0.0'
-                }
+                headers: { 'User-Agent': 'Mozilla/5.0 (compatible; SubProxy/1.0)' },
+                responseType: 'text',
             });
 
-            let config: ClashConfig;
+            const rawContent: string = typeof response.data === 'string' ? response.data : String(response.data);
             const contentType = response.headers['content-type'] || '';
 
-            if (contentType.includes('application/json')) {
-                config = response.data;
-            } else {
-                config = yaml.load(response.data) as ClashConfig;
+            // Try direct parse (YAML or JSON)
+            const directConfig = tryParseClashConfig(rawContent, contentType);
+            if (directConfig) {
+                return { success: true, config: directConfig };
             }
 
-            if (!config.proxies || !Array.isArray(config.proxies)) {
-                throw new Error('Invalid Clash config: missing or invalid proxies');
+            // Try Base64 decode → YAML or proxy URI list
+            const decoded = tryBase64Decode(rawContent);
+            if (decoded) {
+                const decodedConfig = tryParseClashConfig(decoded, '');
+                if (decodedConfig) {
+                    return { success: true, config: decodedConfig };
+                }
+                const proxies = parseProxyUriList(decoded);
+                if (proxies.length > 0) {
+                    return { success: true, config: { proxies, 'proxy-groups': [], rules: [] } };
+                }
             }
 
-            return { success: true, config };
+            throw new Error('Invalid Clash config: missing or invalid proxies');
         } catch (error) {
             const timedOut = axios.isAxiosError(error)
                 && (error.code === 'ECONNABORTED' || (error.message || '').toLowerCase().includes('timeout'));
