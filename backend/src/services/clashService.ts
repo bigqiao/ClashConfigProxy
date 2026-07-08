@@ -1,4 +1,5 @@
 import axios from 'axios';
+import crypto from 'crypto';
 import path from 'path';
 import { promises as fs } from 'fs';
 import type { ClashConfig, ClashProxy, Scheme, AppRouteRule, Config } from '../../../shared/dist/types';
@@ -35,8 +36,21 @@ const CATCH_ALL_GROUP_NAME = '🐟 漏网之鱼';
 const USER_DATA_ROOT = path.join(process.cwd(), 'data', 'users');
 const FAST_FETCH_TIMEOUT_MS = 5000;
 const BACKGROUND_FETCH_TIMEOUT_MS = 300000;
-// AccessToken 订阅：机场面板 API 基址（POST /api/v1/managed/clash 返回下载链接）
-const ACCESS_TOKEN_API_BASE = 'https://oixcloud.com';
+// AccessToken 订阅（oixCloud 托管订阅）：签名 + age 加密的托管端点。
+// 客户端每次生成临时 age 密钥对，用固定密钥对时间戳做 HMAC-SHA256 签名换取配置，
+// 响应中的 config 为 base64(age 加密文件)，用临时私钥解密得到真实节点。
+const OIX_MANAGED_URL = process.env.OIX_MANAGED_URL || 'https://oics.net/api/v1/managed/anywhere/direct';
+const OIX_SIGN_KEY = process.env.OIX_SIGN_KEY || '4a7f27227e2779e5d3e9cd968ba06ceb';
+const OIX_USER_AGENT = 'anywhere-surge-snell';
+
+// age-encryption 为纯 ESM 包，此处以运行时动态 import 方式在 CommonJS 中加载（结果缓存）。
+let ageModulePromise: Promise<any> | null = null;
+function loadAge(): Promise<any> {
+    if (!ageModulePromise) {
+        ageModulePromise = (new Function('return import("age-encryption")')() as Promise<any>);
+    }
+    return ageModulePromise;
+}
 
 export interface ResolveConfigResult {
     success: boolean;
@@ -103,57 +117,72 @@ export class ClashService {
     }
 
     /**
-     * 通过 AccessToken 调用机场面板 API，换取真实的 Clash 订阅下载链接。
-     * POST {base}/api/v1/managed/clash，Authorization: Bearer <token>，取响应 JSON 的 smart 字段。
+     * 通过 AccessToken 拉取 oixCloud 托管订阅（签名 + age 加密）。
+     * 流程：生成临时 age 密钥对 → 用固定密钥对当前时间戳做 HMAC-SHA256 签名
+     * → GET 托管端点(age 公钥放 query，签名/时间戳放 header) → 响应 config 为
+     * base64(age 装甲文件)，去装甲后用临时私钥解密，得到真实的 Clash 配置。
      */
-    async resolveAccessTokenUrl(accessToken: string, timeoutMs: number = FAST_FETCH_TIMEOUT_MS): Promise<{ success: boolean; url?: string; error?: string }> {
+    async fetchAccessTokenConfig(accessToken: string, timeoutMs: number = FAST_FETCH_TIMEOUT_MS): Promise<{ success: boolean; config?: ClashConfig; error?: string }> {
         const token = accessToken.trim();
         if (!token) {
             return { success: false, error: 'AccessToken 为空' };
         }
-        const apiUrl = `${ACCESS_TOKEN_API_BASE}/api/v1/managed/clash`;
         try {
-            const response = await axios.post(apiUrl, null, {
+            const age = await loadAge();
+            const identity: string = await age.generateIdentity();
+            const recipient: string = await age.identityToRecipient(identity);
+            const timestamp = Math.floor(Date.now() / 1000).toString();
+            const signature = crypto.createHmac('sha256', OIX_SIGN_KEY).update(timestamp).digest('hex');
+            const url = `${OIX_MANAGED_URL}?type=love&age-public-key=${encodeURIComponent(recipient)}`;
+            const response = await axios.get(url, {
                 timeout: timeoutMs,
-                headers: { 'Authorization': `Bearer ${token}` },
+                headers: {
+                    'authorization': `Bearer ${token}`,
+                    'x-anywhere-timestamp': timestamp,
+                    'x-anywhere-signature': signature,
+                    'user-agent': OIX_USER_AGENT,
+                    'accept': 'application/json',
+                },
             });
             const data = response.data;
-            const smartUrl = data && typeof data === 'object' ? data.smart : undefined;
-            if (typeof smartUrl === 'string' && smartUrl.trim()) {
-                return { success: true, url: smartUrl.trim() };
+            if (!data || typeof data !== 'object' || typeof data.config !== 'string') {
+                const msg = data && typeof data === 'object' && data.msg ? String(data.msg) : 'AccessToken 未返回有效配置';
+                return { success: false, error: msg };
             }
-            const msg = data && typeof data === 'object' && data.msg ? String(data.msg) : 'AccessToken 未返回有效订阅链接';
-            return { success: false, error: msg };
+            // config 为 base64(age ASCII 装甲文件)：去装甲行 → 二进制 age → 用临时私钥解密
+            const armored = Buffer.from(data.config, 'base64').toString('utf8');
+            const binary = Buffer.from(
+                armored.split('\n').filter((line) => line && !line.startsWith('-----')).join(''),
+                'base64',
+            );
+            const decrypter = new age.Decrypter();
+            decrypter.addIdentity(identity);
+            const yamlText: string = await decrypter.decrypt(new Uint8Array(binary), 'text');
+            const config = tryParseClashConfig(yamlText, '');
+            if (!config) {
+                return { success: false, error: '解密后的配置解析失败' };
+            }
+            return { success: true, config };
         } catch (error) {
             const timedOut = axios.isAxiosError(error)
                 && (error.code === 'ECONNABORTED' || (error.message || '').toLowerCase().includes('timeout'));
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-            logger.error('Failed to resolve access token subscription:', error as Error);
+            logger.error('Failed to fetch access token subscription:', error as Error);
             return { success: false, error: timedOut ? `AccessToken 请求超时(${timeoutMs}ms)` : errorMessage };
         }
     }
 
     async fetchConfigWithCache(userId: string, config: Config): Promise<ResolveConfigResult> {
-        let url: string;
+        let livePromise: Promise<{ success: boolean; config?: ClashConfig; error?: string }>;
         if (config.sourceType === 'accessToken') {
-            const resolved = await this.resolveAccessTokenUrl(config.accessToken || '');
-            if (!resolved.success || !resolved.url) {
-                const cached = await this.loadConfigCache(userId, config.id);
-                if (cached) {
-                    logger.warn(`Using cached config for ${config.name} (${config.id}) due to access token resolve failure: ${resolved.error}`);
-                    return { success: true, config: cached, fromCache: true, error: resolved.error };
-                }
-                return { success: false, error: resolved.error };
-            }
-            url = resolved.url;
+            livePromise = this.fetchAccessTokenConfig(config.accessToken || '', BACKGROUND_FETCH_TIMEOUT_MS);
         } else {
-            url = (config.url || '').trim();
+            const url = (config.url || '').trim();
             if (!url) {
                 return { success: false, error: '配置URL为空' };
             }
+            livePromise = this.fetchConfig(url, BACKGROUND_FETCH_TIMEOUT_MS);
         }
-
-        const livePromise = this.fetchConfig(url, BACKGROUND_FETCH_TIMEOUT_MS);
         const fastGate = await Promise.race([
             livePromise.then((result) => ({ type: 'live' as const, result })),
             new Promise<{ type: 'timeout' }>((resolve) => {
